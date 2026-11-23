@@ -14,9 +14,11 @@ interface State {
   roles: ResolvedRole[] | null;
   launchDocUrl: string | null;
   dialog: DialogRequest | null;
+  /** Machine Tabs draws role marks on thread icons: no second mark on the row. */
+  iconMarks: boolean;
 }
 
-let state: State = { host: null, roles: null, launchDocUrl: null, dialog: null };
+let state: State = { host: null, roles: null, launchDocUrl: null, dialog: null, iconMarks: false };
 const listeners = new Set<() => void>();
 
 export function getState(): State {
@@ -37,6 +39,6 @@ export function openDialog(request: DialogRequest): void {
   setState({ dialog: request });
 }
 export function resetStore(): void {
-  state = { host: null, roles: null, launchDocUrl: null, dialog: null };
+  state = { host: null, roles: null, launchDocUrl: null, dialog: null, iconMarks: false };
   for (const listener of [...listeners]) listener();
 }

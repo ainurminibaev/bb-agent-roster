@@ -395,3 +395,17 @@ describe("0.2.1: go to project and the role icon", () => {
     plain.lifecycle.unmount();
   });
 });
+
+describe("part B: one mark per row", () => {
+  it("when Machine Tabs draws role marks on icons, the row metadata mark is not drawn", () => {
+    const C = app.threadRowMetadata[0]!.component as (p: unknown) => JSX.Element | null;
+    act(() => setState({ iconMarks: true }));
+    const r = renderSlot({ component: C }, { thread: { id: "thr_site" }, data: ROLES } as never);
+    expect(r.container.querySelectorAll("[data-agent-roster-mark]")).toHaveLength(0);
+    r.lifecycle.unmount();
+    act(() => setState({ iconMarks: false }));
+    const r2 = renderSlot({ component: C }, { thread: { id: "thr_site" }, data: ROLES } as never);
+    expect(r2.container.querySelectorAll("[data-agent-roster-mark]")).toHaveLength(1);
+    r2.lifecycle.unmount();
+  });
+});

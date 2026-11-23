@@ -34,6 +34,7 @@ import {
   parseBridgeStatus,
   listJson,
   setPrimary,
+  rowMarkFor,
 } from "./model";
 
 export const STORAGE_KEY = "roster";
@@ -92,7 +93,7 @@ const resolvedSchema = roleSchema.extend({
 export const rpcContract = defineRpcContract({
   roster_list: {
     input: z.null(),
-    output: z.object({ roles: z.array(resolvedSchema), launchDocUrl: z.string().nullable() }),
+    output: z.object({ roles: z.array(resolvedSchema), launchDocUrl: z.string().nullable(), iconMarks: z.boolean().optional() }),
   },
   roster_upsert: { input: roleInput, output: roleSchema },
   roster_remove: { input: z.object({ id: z.string().max(48) }), output: z.object({ removed: z.boolean() }) },
@@ -165,6 +166,7 @@ export default async function plugin(bb: BbPluginApi) {
       await bb.storage.kv.set(STORAGE_KEY, clean);
       roster = clean;
       bb.realtime.publish(CHANGED, { count: clean.roles.length });
+      void resolveAll().then(syncIconMarks).catch(() => undefined);
       return result;
     });
     writing = run.catch(() => undefined);
@@ -399,6 +401,33 @@ export default async function plugin(bb: BbPluginApi) {
     return url;
   }
 
+  // ---------- role marks on thread icons (Machine Tabs' shared "thread marks") ----------
+  let iconMarks = false;
+  let lastMarks: string | null = null;
+  let lastMarksAt = 0;
+  async function syncIconMarks(roles: ResolvedRole[]): Promise<boolean> {
+    const marks: { threadId: string; glyph: "crown" | "link"; tone: "neutral" | "accent" | "muted"; label: string }[] = [];
+    for (const role of roles) {
+      for (const threadId of threadIdsOf(role)) {
+        const m = rowMarkFor(roles, threadId);
+        if (!m || m.roleId !== role.id) continue;
+        marks.push({ threadId, glyph: m.glyph, tone: m.reserve ? "muted" : m.tone, label: m.label });
+      }
+    }
+    const key = JSON.stringify(marks);
+    if (key === lastMarks && Date.now() - lastMarksAt < 5 * 60_000) return iconMarks;
+    try {
+      await bb.sdk.plugins.callRpc({ pluginId: "machine-tabs", method: "thread_marks_replace", input: { marks }, outputSchema: z.unknown(), signal: AbortSignal.timeout(3000) });
+      iconMarks = true;
+      lastMarks = key;
+      lastMarksAt = Date.now();
+    } catch {
+      iconMarks = false; // no Machine Tabs or an older one: the row keeps the plugin's own mark
+      lastMarks = null;
+    }
+    return iconMarks;
+  }
+
   bb.rpc.register(rpcContract, {
     roster_project_icons: async ({ projectIds }) =>
       Object.fromEntries(await Promise.all([...new Set(projectIds)].map(async (id) => [id, await projectIcon(id)] as const))),
@@ -413,7 +442,11 @@ export default async function plugin(bb: BbPluginApi) {
       return { threadId };
     },
     roster_executors: ({ threadId }) => executorsWithArchived(threadId),
-    roster_list: async () => ({ roles: await resolveAll(), launchDocUrl: isSafeUrl(current.launchDocUrl) ? current.launchDocUrl : null }),
+    roster_list: async () => {
+      const roles = await resolveAll();
+      const marks = await syncIconMarks(roles);
+      return { roles, launchDocUrl: isSafeUrl(current.launchDocUrl) ? current.launchDocUrl : null, iconMarks: marks };
+    },
     roster_upsert: (input) => upsert(input),
     roster_remove: async ({ id }) => ({ removed: await remove(id) }),
     roster_set_thread: ({ id, threadId, replace }) => moveThread(id, threadId, replace),

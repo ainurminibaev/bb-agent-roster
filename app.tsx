@@ -59,7 +59,7 @@ let inflight: Promise<void> | null = null;
 function refresh(rpc: Rpc): Promise<void> {
   inflight ??= rpc
     .call("roster_list", null)
-    .then((r) => setState({ roles: r.roles as ResolvedRole[], launchDocUrl: r.launchDocUrl }))
+    .then((r) => setState({ roles: r.roles as ResolvedRole[], launchDocUrl: r.launchDocUrl, iconMarks: r.iconMarks === true }))
     .catch(() => undefined)
     .finally(() => { inflight = null; });
   return inflight;
@@ -462,9 +462,10 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
             )}
             <span data-agent-roster-name-line="" className="pointer-events-none relative flex h-5 min-w-0 items-center gap-2 text-sm">
               <RoleIcon role={role} logo={projectLogo} />
-              <span data-agent-roster-title="" className="flex min-w-0 flex-1 items-baseline">
+              {/* The project wraps to a hidden second line when fewer than ~5 characters of it fit: no lone dash. */}
+              <span data-agent-roster-title="" className="flex h-5 min-w-0 flex-1 flex-wrap items-baseline overflow-hidden leading-5">
                 <span className={cn("max-w-full shrink-0 truncate", active && "font-medium")}>{role.name}</span>
-                {projectName ? <span data-agent-roster-project="" className="ml-1 min-w-0 truncate text-muted-foreground">— {projectName}</span> : null}
+                {projectName ? <span data-agent-roster-project="" className="min-w-[6ch] flex-1 basis-0 truncate pl-1 text-muted-foreground">— {projectName}</span> : null}
               </span>
               <Counter own={work.own.length} others={work.others.length} total={summary.total} />
               {summary.errors > 0 ? <span className="shrink-0 text-[11px] tabular-nums text-red-500" aria-label={`с ошибкой ${summary.errors}`}>⊗{summary.errors}</span> : null}
@@ -985,8 +986,10 @@ function useBadge() {
  * own list shows it with Rows → Metadata on (otherwise the role is seen in the block).
  */
 function RoleMark({ thread, data }: ExperimentalThreadRowMetadataProps<ResolvedRole[] | null>) {
+  const iconMarks = useStore((s) => s.iconMarks);
   const mark = data ? rowMarkFor(data, thread.id) : null;
-  if (!mark) return null;
+  // Machine Tabs already shows the role on the thread icon: one mark per row.
+  if (!mark || iconMarks) return null;
   return (
     <span data-agent-roster-mark="" data-tone={mark.tone} data-reserve={mark.reserve ? "" : undefined} role="img" aria-label={mark.label} title={mark.label}
       className={cn("inline-flex items-center", mark.tone === "neutral" && "text-muted-foreground", mark.reserve && "opacity-45")}

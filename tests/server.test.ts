@@ -202,3 +202,33 @@ describe("0.2.1: main record via CLI", () => {
     expect(list.formatVersion).toBe(1);
   });
 });
+
+describe("part B: role marks on thread icons through Machine Tabs", () => {
+  it("with Machine Tabs: marks are replaced on add, move and remove; gold for main, muted for a reserve thread", async () => {
+    const sent: { marks: { threadId: string; glyph: string; tone: string }[] }[] = [];
+    const h = await setup({ thr_a: { updatedAt: 9 }, thr_b: { updatedAt: 1 }, thr_c: {}, thr_d: {} });
+    h.harness.sdk.stub("plugins.callRpc", async ({ pluginId, method, input }: { pluginId: string; method: string; input: never }) => {
+      if (pluginId === "machine-tabs" && method === "thread_marks_replace") { sent.push(input); return { count: 1 }; }
+      throw new Error("no");
+    });
+    await cli(h, ["add", "--name", "Main", "--kind", "agent", "--threads", "thr_a,thr_b", "--primary", "on"]);
+    await cli(h, ["add", "--name", "Orch", "--kind", "orchestrator", "--thread", "thr_c"]);
+    const list = await h.harness.behavior.callRpc("roster_list", null) as { iconMarks: boolean };
+    expect(list.iconMarks).toBe(true);
+    const last = () => Object.fromEntries(sent.at(-1)!.marks.map((m) => [m.threadId, `${m.glyph}/${m.tone}`]));
+    expect(last()).toEqual({ thr_a: "crown/accent", thr_b: "crown/muted", thr_c: "crown/neutral" });
+    await cli(h, ["set-thread", "orch", "thr_d"]);
+    await h.harness.behavior.callRpc("roster_list", null);
+    expect(last()).toEqual({ thr_a: "crown/accent", thr_b: "crown/muted", thr_d: "crown/neutral" });
+    await cli(h, ["remove", "orch"]);
+    await h.harness.behavior.callRpc("roster_list", null);
+    expect(last()).toEqual({ thr_a: "crown/accent", thr_b: "crown/muted" });
+  });
+  it("without Machine Tabs (or an older one): no error, iconMarks false, the row keeps the plugin's own mark", async () => {
+    const h = await setup({ thr_a: {} });
+    await cli(h, ["add", "--name", "Orch", "--kind", "orchestrator", "--thread", "thr_a"]);
+    const list = await h.harness.behavior.callRpc("roster_list", null) as { iconMarks: boolean; roles: unknown[] };
+    expect(list.iconMarks).toBe(false);
+    expect(list.roles).toHaveLength(1);
+  });
+});
