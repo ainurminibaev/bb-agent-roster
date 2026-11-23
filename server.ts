@@ -3,6 +3,7 @@
 // short per-thread hint. Rules live in model.ts.
 import { cliCommand, defineCli, defineRpcContract, PluginCliError, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { agentsMdSection, appendSection, hasSection, ORCHESTRATOR_RULES, rolePointer } from "./orchestrator-rules";
 import {
   type ActiveTarget,
   type Binding,
@@ -63,6 +64,8 @@ const roleInput = z.object({
   binding: bindingSchema,
   /** Main record; true clears it from every other record. Omitted → unchanged (false for a new role). */
   primary: z.boolean().optional(),
+  /** Orchestrator rules switch; omitted → on for a new orchestrator, unchanged for an existing role. */
+  rulesEnabled: z.boolean().optional(),
 });
 export type RoleInput = z.input<typeof roleInput>;
 
@@ -81,6 +84,7 @@ const roleSchema = z.object({
   projectId: z.string().nullable(),
   binding: bindingSchema,
   primary: z.boolean(),
+  rulesEnabled: z.boolean(),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
@@ -118,6 +122,14 @@ export const rpcContract = defineRpcContract({
   roster_project_icons: {
     input: z.object({ projectIds: z.array(z.string().max(64)).max(50) }),
     output: z.record(z.string(), z.string().nullable()),
+  },
+  roster_agents_md: {
+    input: z.object({ roleId: z.string().max(48), append: z.boolean().default(false) }),
+    output: z.object({
+      status: z.enum(["no-project", "no-file", "missing", "present", "appended"]),
+      path: z.string().nullable(),
+      section: z.string(),
+    }),
   },
   roster_set_thread: {
     input: z.object({ id: z.string().max(48), threadId: z.string().max(64), replace: z.string().max(64).nullable().default(null) }),
@@ -261,6 +273,7 @@ export default async function plugin(bb: BbPluginApi) {
       projectId: input.projectId || null,
       binding,
       primary: input.primary ?? (existing ? existing.primary : false),
+      rulesEnabled: input.kind === "orchestrator" && (input.rulesEnabled ?? (existing ? existing.rulesEnabled : true)),
     };
   }
   function upsert(raw: RoleInput): Promise<Role> {
@@ -369,7 +382,8 @@ export default async function plugin(bb: BbPluginApi) {
     for (const source of sources) {
       for (const file of ICON_FILES) {
         try {
-          const read = (await bb.sdk.files.read({ hostId: source.hostId!, path: file.path, rootPath: source.path!, signal: AbortSignal.timeout(3000) } as never)) as unknown as { content?: string; contentEncoding?: string; sizeBytes?: number };
+          const root = source.path!.replace(/\/+$/, "");
+          const read = (await bb.sdk.files.read({ hostId: source.hostId!, path: `${root}/${file.path}`, rootPath: root, signal: AbortSignal.timeout(3000) } as never)) as unknown as { content?: string; contentEncoding?: string; sizeBytes?: number };
           if (typeof read.content !== "string" || (read.sizeBytes ?? 0) > 256 * 1024) continue;
           const b64 = read.contentEncoding === "base64" ? read.content : Buffer.from(read.content, "utf8").toString("base64");
           return `data:${file.mime};base64,${b64}`;
@@ -401,6 +415,56 @@ export default async function plugin(bb: BbPluginApi) {
     return url;
   }
 
+  // ---------- 0.3: the AGENTS.md section of a role (proposed, appended only on request) ----------
+  async function projectFile(role: Role): Promise<{ hostId: string; root: string } | null> {
+    const projectId = role.projectId;
+    if (!projectId) return null;
+    try {
+      const project = (await bb.sdk.projects.get({ projectId })) as unknown as { sources?: { hostId?: string; path?: string; isDefault?: boolean }[] };
+      const sources = (project.sources ?? []).filter((x) => typeof x.hostId === "string" && typeof x.path === "string" && x.path);
+      if (sources.length === 0) return null;
+      let threadHost: string | null = null;
+      const threadId = threadIdsOf(role)[0];
+      if (threadId) {
+        try {
+          const t = (await bb.sdk.threads.get({ threadId })) as unknown as { environmentId?: string };
+          if (t.environmentId) threadHost = String(((await bb.sdk.environments.get({ environmentId: t.environmentId } as never)) as unknown as { hostId?: string }).hostId ?? "") || null;
+        } catch { /* fall back to the default source */ }
+      }
+      const pick = sources.find((x) => x.hostId === threadHost) ?? sources.find((x) => x.isDefault) ?? sources[0]!;
+      return { hostId: pick.hostId!, root: pick.path! };
+    } catch {
+      return null;
+    }
+  }
+  async function agentsMd(roleId: string, append: boolean) {
+    const role = roster.roles.find((r) => r.id === roleId);
+    if (!role) throw new Error(`No role with id ${roleId}.`);
+    const section = agentsMdSection(role.name, role.responsibility);
+    const where = await projectFile(role);
+    if (!where) return { status: "no-project" as const, path: null, section };
+    const root = where.root.replace(/\/+$/, "");
+    const full = `${root}/AGENTS.md`;
+    let text: string | null = null;
+    let sha: string | null = null;
+    try {
+      const read = (await bb.sdk.files.read({ hostId: where.hostId, path: full, rootPath: root })) as unknown as { content?: string; contentEncoding?: string; sha256?: string };
+      text = read.contentEncoding === "base64" ? Buffer.from(read.content ?? "", "base64").toString("utf8") : read.content ?? "";
+      sha = read.sha256 ?? null;
+    } catch {
+      text = null;
+    }
+    if (text !== null && hasSection(text, role.name)) return { status: "present" as const, path: full, section };
+    if (!append) return { status: text === null ? "no-file" as const : "missing" as const, path: full, section };
+    // Append only; the existing text stays byte for byte, a concurrent edit makes the write fail.
+    await bb.sdk.files.write({
+      hostId: where.hostId, path: full, rootPath: root,
+      content: appendSection(text ?? "", section), contentEncoding: "utf8",
+      expectedSha256: text === null ? null : sha,
+    } as never);
+    return { status: "appended" as const, path: full, section };
+  }
+
   // ---------- role marks on thread icons (Machine Tabs' shared "thread marks") ----------
   let iconMarks = false;
   let lastMarks: string | null = null;
@@ -429,6 +493,7 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   bb.rpc.register(rpcContract, {
+    roster_agents_md: ({ roleId, append }) => agentsMd(roleId, append),
     roster_project_icons: async ({ projectIds }) =>
       Object.fromEntries(await Promise.all([...new Set(projectIds)].map(async (id) => [id, await projectIcon(id)] as const))),
     roster_details: ({ threadId }) => (isThreadId(threadId) ? details(threadId) : Promise.resolve({ activity: null, model: null, providerId: null, lastActiveAt: null })),
@@ -466,7 +531,10 @@ export default async function plugin(bb: BbPluginApi) {
   bb.agents.contributeInstructions(({ threadId }) => {
     const names = new Map(roster.roles.map((r) => [r.id, r.name]));
     const own = threadId ? rolesForThread(roster.roles, threadId) : [];
-    return instructionsFor(own.map((r) => ({ ...r, active: { kind: "none" }, parentName: r.parentId ? names.get(r.parentId) ?? null : null })));
+    return instructionsFor(
+      own.map((r) => ({ ...r, active: { kind: "none" }, parentName: r.parentId ? names.get(r.parentId) ?? null : null })),
+      { rules: ORCHESTRATOR_RULES, pointer: rolePointer },
+    );
   });
 
   // ---------- CLI ----------
@@ -497,12 +565,13 @@ export default async function plugin(bb: BbPluginApi) {
     "bridge-topic": { type: "integer", min: 0, max: 2 ** 31, description: "Topic number of the bridge pair that names the active thread" },
     url: { type: "string", description: "Link for an external employee (http/https)" },
     primary: { type: "enum", values: ["on", "off"], description: "The one main record (gold crown); on clears it from the previous main record" },
+    rules: { type: "enum", values: ["on", "off"], description: "Orchestrator only: shared orchestrator rules in its thread (default on for a new orchestrator)" },
     json: { type: "boolean", description: "Machine-readable output" },
   } as const;
 
   type RoleOpts = {
     name?: string; kind?: RoleKind; about?: string; icon?: string; parent?: string; project?: string;
-    thread?: string; threads?: string[]; "bridge-topic"?: number; url?: string; primary?: "on" | "off";
+    thread?: string; threads?: string[]; "bridge-topic"?: number; url?: string; primary?: "on" | "off"; rules?: "on" | "off";
   };
   function bindingFrom(o: RoleOpts, base: Binding | null, ctxThread: string | undefined): Binding {
     if (o.url !== undefined) return { mode: "external", url: o.url };
@@ -542,6 +611,7 @@ export default async function plugin(bb: BbPluginApi) {
               parentId: parentFrom(o.parent, null), projectId: o.project ?? ctx.projectId ?? null,
               binding: bindingFrom(o, o.kind === "external" ? { mode: "external", url: "" } : null, ctx.threadId),
               ...(o.primary ? { primary: o.primary === "on" } : {}),
+              ...(o.rules ? { rulesEnabled: o.rules === "on" } : {}),
             });
             return out(o.json, role, `Added ${role.name} (${KIND_LABEL[role.kind]}), id ${role.id}.`);
           } catch (error) { return fail(error); }
@@ -562,6 +632,7 @@ export default async function plugin(bb: BbPluginApi) {
               parentId: parentFrom(o.parent, role.parentId), projectId: o.project ?? role.projectId,
               binding: bindingFrom(o, role.binding, ctx.threadId),
               ...(o.primary ? { primary: o.primary === "on" } : {}),
+              ...(o.rules ? { rulesEnabled: o.rules === "on" } : {}),
             });
             return out(o.json, next, `Updated ${next.name}.`);
           } catch (error) { return fail(error); }

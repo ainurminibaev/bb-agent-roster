@@ -165,7 +165,8 @@ describe("0.2.1: project logos", () => {
     const h = await setup({});
     h.harness.sdk.stub("projects.get", async ({ projectId }: { projectId: string }) => ({ sources: [{ hostId: "h1", path: `/p/${projectId}`, isDefault: true }] }) as never);
     h.harness.sdk.stub("files.read", async ({ rootPath, path }: { rootPath: string; path: string }) => {
-      if (rootPath === "/p/a" && path === ".bb/icon.svg") return { content: "<svg/>", contentEncoding: "utf8", sizeBytes: 6 } as never;
+      if (!path.startsWith("/")) throw new Error("Path must be absolute");
+      if (rootPath === "/p/a" && path === "/p/a/.bb/icon.svg") return { content: "<svg/>", contentEncoding: "utf8", sizeBytes: 6 } as never;
       throw new Error("ENOENT");
     });
     let calls = 0;
@@ -230,5 +231,64 @@ describe("part B: role marks on thread icons through Machine Tabs", () => {
     const list = await h.harness.behavior.callRpc("roster_list", null) as { iconMarks: boolean; roles: unknown[] };
     expect(list.iconMarks).toBe(false);
     expect(list.roles).toHaveLength(1);
+  });
+});
+
+import { ORCHESTRATOR_RULES, appendSection, hasSection } from "../orchestrator-rules";
+describe("0.3: orchestrator rules and the AGENTS.md section", () => {
+  const hint = (h: Awaited<ReturnType<typeof setup>>, threadId: string) => h.harness.registrations.instructionProvider!({ threadId, projectId: "p" }) as string;
+
+  it("a new orchestrator gets layer 1 and the pointer; an agent never does; the switch turns it off", async () => {
+    const h = await setup({ thr_o: {}, thr_a: {} });
+    await cli(h, ["add", "--name", "Site", "--kind", "orchestrator", "--thread", "thr_o"]);
+    await cli(h, ["add", "--name", "Helper", "--kind", "agent", "--thread", "thr_a"]);
+    expect(hint(h, "thr_o")).toContain(ORCHESTRATOR_RULES.split("\n")[1]);
+    expect(hint(h, "thr_o")).toContain("AGENTS.md проекта, раздел «Роль: Site»");
+    expect(hint(h, "thr_a")).not.toContain("постановщик и приёмщик");
+    await cli(h, ["update", "site", "--rules", "off"]);
+    expect(hint(h, "thr_o")).not.toContain("постановщик и приёмщик");
+    const list = JSON.parse((await cli(h, ["list", "--json"])).stdout);
+    expect(list.roles.find((r: { id: string }) => r.id === "site").orchestratorRules).toBe(false);
+  });
+
+  it("an orchestrator saved before 0.3 keeps the rules off after the update", async () => {
+    const h = await setup({ thr_o: {} }, null, { version: 1, roles: [{ id: "old", name: "Old", kind: "orchestrator", binding: { mode: "pinned", threadId: "thr_o" } }] });
+    expect(hint(h, "thr_o")).not.toContain("постановщик и приёмщик");
+    await cli(h, ["update", "old", "--about", "x"]);
+    expect(hint(h, "thr_o")).not.toContain("постановщик и приёмщик");
+  });
+
+  it("proposes the section, appends it only on request and never rewrites an existing one", async () => {
+    let file: { content: string; sha256: string } | null = { content: "# Project\n\nrules\n", sha256: "s1" };
+    const writes: { content: string; expectedSha256: unknown }[] = [];
+    const h = await setup({ thr_o: { } });
+    h.harness.sdk.stub("projects.get", async () => ({ sources: [{ hostId: "h1", path: "/repo", isDefault: true }] }) as never);
+    h.harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => makeThreadResponse({ id: threadId, archivedAt: null }));
+    h.harness.sdk.stub("environments.get", async () => ({ hostId: "h1" }) as never);
+    h.harness.sdk.stub("files.read", async ({ path }: { path: string }) => { if (path !== "/repo/AGENTS.md") throw new Error("Path must be absolute"); if (!file) throw new Error("ENOENT"); return { ...file, contentEncoding: "utf8" } as never; });
+    h.harness.sdk.stub("files.write", async (args: { path: string; content: string; expectedSha256: unknown }) => { if (args.path !== "/repo/AGENTS.md") throw new Error("Path must be absolute"); writes.push(args); file = { content: args.content, sha256: "s2" }; return {} as never; });
+    await cli(h, ["add", "--name", "Site", "--kind", "orchestrator", "--thread", "thr_o", "--project", "p1"]);
+    const first = await h.harness.behavior.callRpc("roster_agents_md", { roleId: "site" }) as { status: string };
+    expect(first.status).toBe("missing");
+    expect(writes).toHaveLength(0);
+    const done = await h.harness.behavior.callRpc("roster_agents_md", { roleId: "site", append: true }) as { status: string };
+    expect(done.status).toBe("appended");
+    expect(writes[0]!.content.startsWith("# Project\n\nrules\n")).toBe(true);
+    expect(writes[0]!.expectedSha256).toBe("s1");
+    expect(hasSection(writes[0]!.content, "Site")).toBe(true);
+    // Promote again (remove + add): the existing section is left as it is.
+    await cli(h, ["remove", "site"]);
+    await cli(h, ["add", "--name", "Site", "--kind", "orchestrator", "--thread", "thr_o", "--project", "p1"]);
+    const again = await h.harness.behavior.callRpc("roster_agents_md", { roleId: "site", append: true }) as { status: string };
+    expect(again.status).toBe("present");
+    expect(writes).toHaveLength(1);
+  });
+
+  it("append keeps the existing text byte for byte", () => {
+    expect(appendSection("a", "## Роль: X\n")).toBe("a\n\n## Роль: X\n");
+    expect(appendSection("a\n", "S")).toBe("a\n\nS");
+    expect(appendSection("", "S")).toBe("S");
+    expect(hasSection("### Роль: Site (beta)", "Site (beta)")).toBe(true);
+    expect(hasSection("## Роль: Sitex", "Site")).toBe(false);
   });
 });

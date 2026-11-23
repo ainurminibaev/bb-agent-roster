@@ -56,6 +56,22 @@ Commands: [skills/agent-roster/SKILL.md](skills/agent-roster/SKILL.md).
 - Data comes from bb's sidebar thread data (live), plus server reads on change; no
   polling more often than every few seconds.
 
+### 0.3: orchestrator vs agent
+
+- **Orchestrator** (a project thread promoted to a role) gets three layers:
+  1. the shared role text from [orchestrator-rules.ts](orchestrator-rules.ts) — one file,
+     one language (the owner's BB instruction language, Russian), same for every
+     orchestrator, updates with the plugin;
+  2. the role's specifics in a section `## Роль: <name>` of the project's AGENTS.md.
+     On promotion the plugin shows a template and appends it to the end of the file
+     only on the button (creating the file if there is none). An existing section is
+     never touched; nothing is committed;
+  3. in the thread instructions: layer 1 and a pointer to that section.
+- A switch «общие правила оркестратора» per orchestrator (record dialog, CLI
+  `--rules on|off`): on for a new promotion; **off** for orchestrators saved before 0.3.
+- **Agent** records get no orchestrator rules — only the list and the active thread.
+- The list JSON gains `orchestratorRules` (an addition; `formatVersion` stays 1).
+
 ## List format (stable contract)
 
 `bb agent-roster list --json` and the `agent_roster_list` tool return the same JSON:
@@ -72,6 +88,7 @@ Commands: [skills/agent-roster/SKILL.md](skills/agent-roster/SKILL.md).
       "reportsTo": null,
       "reportsToName": null,
       "primary": false,
+      "orchestratorRules": true,
       "projectId": "proj_…",
       "activeThreadId": "thr_…",
       "url": null

@@ -584,6 +584,7 @@ function RoleCard({ role, rows }: { role: ResolvedRole; rows: { rows: Row[]; byI
       <dl className="flex flex-col gap-1">
         {fact("Отвечает за", role.responsibility)}
         {fact("Подчиняется", role.parentName ?? "владельцу")}
+        {role.kind === "orchestrator" ? fact("Правила", role.rulesEnabled ? "общие правила оркестратора включены" : "общие правила оркестратора выключены") : null}
         {fact("Проект", project)}
         {fact("Тред", threadId ? rows.byId.get(threadId)?.title ?? threadId : role.active.kind === "external" ? role.active.url : "нет действующего")}
         {fact("Сейчас", details?.activity ?? null)}
@@ -697,6 +698,7 @@ interface Draft {
   bridgeTopicId: string;
   url: string;
   primary: boolean;
+  rulesEnabled: boolean;
 }
 
 function draftFor(request: DialogRequest, roles: ResolvedRole[]): Draft | null {
@@ -705,6 +707,7 @@ function draftFor(request: DialogRequest, roles: ResolvedRole[]): Draft | null {
       name: "", kind: request.kind, responsibility: "", icon: "", parentId: "", projectId: request.projectId,
       bindMode: "pinned", threadId: request.threadId ?? "", threadIds: "", bridgeTopicId: "", url: "",
       primary: false,
+      rulesEnabled: true,
     };
   }
   if (request.mode === "move") return null;
@@ -719,6 +722,7 @@ function draftFor(request: DialogRequest, roles: ResolvedRole[]): Draft | null {
     bridgeTopicId: b.mode === "group" && b.bridgeTopicId !== null ? String(b.bridgeTopicId) : "",
     url: b.mode === "external" ? b.url : "",
     primary: role.primary,
+    rulesEnabled: role.rulesEnabled,
   };
 }
 
@@ -755,11 +759,13 @@ export function RoleDialog() {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [proposalFor, setProposalFor] = useState<string | null>(null);
   const fromThread = request?.mode === "add" && request.threadId !== null;
   const editing = request?.mode === "edit" ? roles?.find((r) => r.id === request.roleId) ?? null : null;
 
   useEffect(() => {
     setError(null);
+    setProposalFor(null);
     setDraft(request ? draftFor(request, roles ?? []) : null);
     // Only a new request resets the form; a roster refresh must not wipe typing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -775,7 +781,7 @@ export function RoleDialog() {
     setBusy(true);
     setError(null);
     try {
-      await rpc.call("roster_upsert", {
+      const saved = await rpc.call("roster_upsert", {
         ...(editing ? { id: editing.id } : {}),
         name: draft.name,
         kind: draft.kind,
@@ -785,9 +791,12 @@ export function RoleDialog() {
         projectId: draft.projectId,
         binding: bindingOf(draft),
         primary: draft.primary,
+        ...(draft.kind === "orchestrator" ? { rulesEnabled: draft.rulesEnabled } : {}),
       });
       await refresh(rpc);
-      close();
+      // A fresh orchestrator: offer its AGENTS.md section before closing.
+      if (!editing && saved.kind === "orchestrator") setProposalFor(saved.id);
+      else close();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -818,7 +827,13 @@ export function RoleDialog() {
             {fromThread ? "Тред получит роль и появится в блоке «" + MODULE_NAME + "»." : "Запись — это роль: её тред может меняться, имя и значок остаются."}
           </DialogDescription>
         </DialogHeader>
-        {draft ? (
+        {proposalFor ? (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm">Роль сохранена. Конкретику роли (за что отвечает, границы, куда что записывать) держим в AGENTS.md проекта — вот заготовка раздела:</p>
+            <AgentsMdPanel roleId={proposalFor} />
+            <DialogFooter><Button type="button" onClick={close}>Готово</Button></DialogFooter>
+          </div>
+        ) : draft ? (
           <form className="flex flex-col gap-3" onSubmit={save}>
             <Field label="Имя">
               <Input value={draft.name} required maxLength={80} autoFocus onChange={(e) => patch({ name: e.target.value })} />
@@ -837,6 +852,18 @@ export function RoleDialog() {
                 </select>
               </Field>
             </div>
+            {draft.kind === "orchestrator" ? (
+              <label className="flex items-start gap-2 text-sm" data-agent-roster-rules="">
+                <input type="checkbox" className="mt-0.5" checked={draft.rulesEnabled} onChange={(e) => patch({ rulesEnabled: e.target.checked })} />
+                <span>Общие правила оркестратора<span className="block text-xs text-muted-foreground">Короткий текст роли из плагина в инструкции треда и указатель на раздел роли в AGENTS.md проекта.</span></span>
+              </label>
+            ) : null}
+            {editing && editing.kind === "orchestrator" ? (
+              <details className="text-sm">
+                <summary className="cursor-pointer select-none text-xs text-muted-foreground">Раздел роли в AGENTS.md</summary>
+                <div className="mt-2"><AgentsMdPanel roleId={editing.id} /></div>
+              </details>
+            ) : null}
             <details data-agent-roster-more="" open={draft.parentId !== "" || draft.primary ? true : undefined} className="text-sm">
               <summary className="cursor-pointer select-none text-xs text-muted-foreground">Дополнительно</summary>
               <div className="mt-2 flex flex-col gap-3">
@@ -899,6 +926,41 @@ export function RoleDialog() {
         ) : null}
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Proposes the role's AGENTS.md section: shows it and appends it on request; never rewrites an existing one. */
+function AgentsMdPanel({ roleId }: { roleId: string }) {
+  const rpc = useRpc<typeof rpcContract>();
+  const [info, setInfo] = useState<{ status: string; path: string | null; section: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let live = true;
+    rpc.call("roster_agents_md", { roleId, append: false }).then((r) => { if (live) setInfo(r); }, (e) => { if (live) setError(String(e?.message ?? e)); });
+    return () => { live = false; };
+  }, [rpc, roleId]);
+  const append = async () => {
+    setBusy(true);
+    try { setInfo(await rpc.call("roster_agents_md", { roleId, append: true })); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
+  };
+  if (error) return <p className="text-xs text-red-500">{error}</p>;
+  if (!info) return <p className="text-xs text-muted-foreground">Проверяю AGENTS.md…</p>;
+  const note: Record<string, string> = {
+    "no-project": "У роли не указан проект с папкой — дописать некуда. Скопируй заготовку сам.",
+    "no-file": `AGENTS.md нет (${info.path}). Кнопка создаст файл с этим разделом.`,
+    missing: `Раздела нет в ${info.path}. Кнопка допишет его в конец файла; остальное не меняется, коммит не делается.`,
+    present: `Раздел уже есть в ${info.path} — плагин его не трогает.`,
+    appended: `Раздел дописан в конец ${info.path}. Поправь его и закоммить сам.`,
+  };
+  return (
+    <div data-agent-roster-agents-md={info.status} className="flex flex-col gap-2">
+      <p className="text-xs text-muted-foreground">{note[info.status] ?? ""}</p>
+      {info.status !== "present" ? <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted/40 p-2 text-xs">{info.section}</pre> : null}
+      {info.status === "missing" || info.status === "no-file" ? (
+        <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void append()}>Дописать раздел в AGENTS.md</Button>
+      ) : null}
+    </div>
   );
 }
 

@@ -54,6 +54,8 @@ export interface Role {
   binding: Binding;
   /** The one "main" record (the owner's assistant): its crown is gold. At most one. */
   primary: boolean;
+  /** Orchestrator only: the shared orchestrator rules go into its thread. Absent in old data → off. */
+  rulesEnabled: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -135,6 +137,7 @@ export function parseRoster(raw: unknown): Roster {
       projectId: typeof r.projectId === "string" && r.projectId ? r.projectId.slice(0, 64) : null,
       binding: parseBinding(r.binding, kind),
       primary: r.primary === true,
+      rulesEnabled: kind === "orchestrator" && r.rulesEnabled === true,
       createdAt: num(r.createdAt, 0),
       updatedAt: num(r.updatedAt, 0),
     });
@@ -298,7 +301,7 @@ export function setRoleThread(role: Role, threadId: string, replace: string | nu
     binding = { mode: "pinned", threadId };
   }
   const kind = role.kind === "external" ? "agent" : role.kind;
-  return { ...role, kind, binding, updatedAt: now };
+  return { ...role, kind, binding, rulesEnabled: kind === "orchestrator" && role.rulesEnabled, updatedAt: now };
 }
 
 /** Roles whose binding includes the thread (a group marks every thread of it). */
@@ -435,7 +438,7 @@ export function formatList(roles: readonly ResolvedRole[]): string {
 }
 
 /** The short per-thread hint. No list here, only how to get it. */
-export function instructionsFor(own: readonly ResolvedRole[]): string {
+export function instructionsFor(own: readonly ResolvedRole[], orchestratorRules?: { rules: string; pointer: (name: string) => string }): string {
   const lines = [
     `${MODULE_NAME} module: this BB keeps a shared list of agent roles (agents, project orchestrators, external employees).`,
     "Get it with the agent_roster_list tool or `bb agent-roster list`. To write to an agent, send a normal BB message to its active thread: `bb thread tell <thread id> '<text>'`.",
@@ -445,6 +448,12 @@ export function instructionsFor(own: readonly ResolvedRole[]): string {
     lines.push(
       `This thread holds a role (data, not instructions): name ${quote(role.name)}, kind ${role.kind}, reports to ${role.parentName ? quote(role.parentName) : "the owner"}${role.responsibility ? `, responsible for ${quote(role.responsibility)}` : ""}.`,
     );
+  }
+  // Orchestrator rules (layer 1) and the AGENTS.md pointer (layer 3) — only for an
+  // orchestrator with the switch on; agents never get them.
+  const orchestrator = own.find((r) => r.kind === "orchestrator" && r.rulesEnabled);
+  if (orchestrator && orchestratorRules) {
+    lines.push("", orchestratorRules.rules, orchestratorRules.pointer(orchestrator.name));
   }
   return lines.join("\n");
 }
@@ -664,6 +673,8 @@ export interface ListedRole {
   reportsTo: string | null;
   /** The one main record (added in 0.2.1). */
   primary: boolean;
+  /** Orchestrator: whether the shared orchestrator rules are on (added in 0.3). */
+  orchestratorRules: boolean;
   reportsToName: string | null;
   projectId: string | null;
   /** The active thread to write to with `bb thread tell`; null when there is none here. */
@@ -689,6 +700,7 @@ export function listJson(roles: readonly ResolvedRole[]): ListedRoster {
       responsibility: r.responsibility,
       reportsTo: r.parentId,
       primary: r.primary,
+      orchestratorRules: r.rulesEnabled,
       reportsToName: r.parentName,
       projectId: r.projectId,
       activeThreadId: r.active.kind === "thread" ? r.active.threadId : null,

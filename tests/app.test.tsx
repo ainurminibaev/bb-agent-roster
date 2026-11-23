@@ -12,7 +12,7 @@ const app = await loadPluginApp(() => import("../app"));
 function resolved(p: Partial<ResolvedRole> & { id: string; name: string }): ResolvedRole {
   return {
     kind: "orchestrator", responsibility: "", icon: "", parentId: null, projectId: null,
-    binding: { mode: "pinned", threadId: `thr_${p.id}` }, primary: false, createdAt: 0, updatedAt: 0,
+    binding: { mode: "pinned", threadId: `thr_${p.id}` }, primary: false, rulesEnabled: false, createdAt: 0, updatedAt: 0,
     active: { kind: "thread", threadId: `thr_${p.id}`, reason: "pinned" }, parentName: null, ...p,
   };
 }
@@ -194,7 +194,8 @@ describe("block, page, dialog", () => {
       experimental_rpcContract: rpcContract,
       rpc: {
         roster_list: () => ({ roles: [], launchDocUrl: null }),
-        roster_upsert: (input: unknown) => { saved.push(input); return { icon: "", responsibility: "", parentId: null, projectId: null, primary: false, ...(input as object), id: "x", createdAt: 0, updatedAt: 0 }; },
+        roster_upsert: (input: unknown) => { saved.push(input); return { icon: "", responsibility: "", parentId: null, projectId: null, primary: false, rulesEnabled: true, ...(input as object), id: "x", createdAt: 0, updatedAt: 0 }; },
+        roster_agents_md: () => ({ status: "missing", path: "/repo/AGENTS.md", section: "## Роль: Orchestrator\n" }),
       } as never,
     });
     const [assign] = app.threadActions;
@@ -209,6 +210,10 @@ describe("block, page, dialog", () => {
     await waitFor(() => expect(saved).toHaveLength(1));
     expect(saved[0]).toMatchObject({ name: "Orchestrator", kind: "orchestrator", projectId: "p1", binding: { mode: "pinned", threadId: "thr_new" } });
     expect(saved[0]).not.toHaveProperty("id");
+    expect(saved[0]).toMatchObject({ rulesEnabled: true });
+    // After promotion the dialog proposes the AGENTS.md section; nothing is written without the button.
+    await waitFor(() => expect(document.querySelector('[data-agent-roster-agents-md="missing"]')).not.toBeNull());
+    expect(document.body.textContent).toContain("Дописать раздел в AGENTS.md");
     slot.lifecycle.unmount();
   });
 });

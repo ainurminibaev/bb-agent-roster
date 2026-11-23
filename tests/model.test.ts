@@ -21,7 +21,7 @@ import {
 function role(p: Partial<Role> & { id: string }): Role {
   return {
     name: p.id, kind: "agent", responsibility: "", icon: "", parentId: null, projectId: null,
-    binding: { mode: "pinned", threadId: null }, primary: false, createdAt: 0, updatedAt: 0, ...p,
+    binding: { mode: "pinned", threadId: null }, primary: false, rulesEnabled: false, createdAt: 0, updatedAt: 0, ...p,
   };
 }
 function facts(list: ThreadFact[]): Map<string, ThreadFact> {
