@@ -168,6 +168,8 @@ describe("text for agents", () => {
   });
   it("slugs are unique", () => {
     expect(slugify("Site Orchestrator", new Set())).toBe("site-orchestrator");
-    expect(slugify("Помощник", new Set(["role"]))).toBe("role-2");
+    expect(slugify("Помощник", new Set())).toBe("pomoschnik");
+    expect(slugify("Тест", new Set(["test"]))).toBe("test-2");
+    expect(slugify("☆", new Set(["role"]))).toBe("role-2");
   });
 });

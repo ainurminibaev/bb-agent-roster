@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
-import { act, waitFor } from "@testing-library/react";
+import { act, fireEvent, waitFor } from "@testing-library/react";
+import { rpcContract } from "../server";
 import { loadPluginApp, mountPluginContentScripts, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { ResolvedRole } from "../model";
 import { getState, resetStore, setState } from "../lib/store";
@@ -48,6 +49,8 @@ describe("registrations", () => {
     expect(app.navPanels.map((p) => p.path)).toEqual(["agents"]);
     expect(app.appOverlays.map((o) => o.id)).toEqual(["roster"]);
     expect(app.threadActions.map((a) => a.id)).toEqual(["role", "remove-role"]);
+    // A thread row gets one role mark: the row status. No second row-metadata mark.
+    expect(app.threadRowMetadata ?? []).toHaveLength(0);
   });
 });
 
@@ -150,6 +153,12 @@ describe("block, page, dialog", () => {
     expect(site.textContent).toContain("⊗1");
     expect(host.querySelector('[data-agent-roster-role="lead"]')!.getAttribute("data-state")).toBe("waiting");
     expect(host.querySelector('[aria-label="Добавить агента"]')).not.toBeNull();
+    // One role icon per record row, state drawn as a dot or spinner, never a second picture.
+    for (const li of host.querySelectorAll("[data-agent-roster-role]")) {
+      expect(li.querySelectorAll("[data-role-icon]")).toHaveLength(1);
+      expect(li.querySelectorAll("[data-state-mark]")).toHaveLength(1);
+      expect(li.querySelectorAll("[data-state-mark] svg, [data-state-mark] img")).toHaveLength(0);
+    }
     (site.querySelector("button") as HTMLButtonElement).click();
     expect(JSON.stringify(slot.inspection.navigateCalls)).toContain("thr_site");
     expect(host.innerHTML).toMatchSnapshot();
@@ -180,12 +189,25 @@ describe("block, page, dialog", () => {
   });
 
   it("the menu action opens the short dialog bound to the thread", async () => {
-    const slot = renderSlot(app.appOverlays[0]!, {}, { rpc: { roster_list: () => ({ roles: [], launchDocUrl: null }), roster_upsert: (input: unknown) => input } as never });
+    const saved: unknown[] = [];
+    const slot = renderSlot(app.appOverlays[0]!, {}, {
+      experimental_rpcContract: rpcContract,
+      rpc: {
+        roster_list: () => ({ roles: [], launchDocUrl: null }),
+        roster_upsert: (input: unknown) => { saved.push(input); return { ...(input as object), id: "x", createdAt: 0, updatedAt: 0 }; },
+      } as never,
+    });
     const [assign] = app.threadActions;
     const action = assign!.item({ thread: { id: "thr_new", projectId: "p1" }, data: { roles: [], rpc: {} }, sdk: {}, navigate: {}, experimental_panel: {} } as never)!;
     act(() => void action.run({ requestRename: () => undefined }));
     expect((await slot.findAllByText("Сделать оркестратором")).length).toBeGreaterThan(0);
-    expect(document.querySelector("[data-agent-roster-dialog]")!.textContent).toContain("Кому подчиняется");
+    const dialog = document.querySelector("[data-agent-roster-dialog]")!;
+    expect(dialog.textContent).toContain("Кому подчиняется");
+    fireEvent.change(dialog.querySelector("input")!, { target: { value: "Orchestrator" } });
+    fireEvent.submit(dialog.querySelector("form")!);
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0]).toMatchObject({ name: "Orchestrator", kind: "orchestrator", projectId: "p1", binding: { mode: "pinned", threadId: "thr_new" } });
+    expect(saved[0]).not.toHaveProperty("id");
     slot.lifecycle.unmount();
   });
 });

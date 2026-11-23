@@ -288,9 +288,16 @@ export function rolesForThread<R extends Role>(roles: readonly R[], threadId: st
   return roles.filter((r) => threadIdsOf(r).includes(threadId));
 }
 
+const CYR: Record<string, string> = {
+  а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh", з: "z", и: "i", й: "y", к: "k", л: "l", м: "m",
+  н: "n", о: "o", п: "p", р: "r", с: "s", т: "t", у: "u", ф: "f", х: "h", ц: "ts", ч: "ch", ш: "sh", щ: "sch",
+  ъ: "", ы: "y", ь: "", э: "e", ю: "yu", я: "ya",
+};
+
 export function slugify(name: string, taken: ReadonlySet<string>): string {
   const base = name
     .toLowerCase()
+    .replace(/[а-яё]/g, (ch) => CYR[ch] ?? "")
     .normalize("NFKD")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")

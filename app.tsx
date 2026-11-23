@@ -9,7 +9,6 @@ import {
   useRealtime,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
-import type { ExperimentalThreadRowMetadataProps } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import {
   type Binding,
@@ -92,8 +91,24 @@ function useRows(): { rows: RowFacts[]; byId: Map<string, RowFacts> } {
 
 // ---------- pieces ----------
 
+/** State like bb's thread rows: a spinner while working, otherwise a dot. */
+function StateMark({ state }: { state: RoleState }) {
+  if (state === "running") {
+    return (
+      <span data-state-mark="" role="status" aria-label={STATE_LABEL[state]} className="inline-flex size-3.5 shrink-0 items-center justify-center">
+        <span className="size-3 animate-spin rounded-full border-[1.5px] border-muted-foreground/30 border-t-muted-foreground" />
+      </span>
+    );
+  }
+  return (
+    <span data-state-mark="" role="status" aria-label={STATE_LABEL[state]} className="inline-flex size-3.5 shrink-0 items-center justify-center">
+      <span className={cn("size-1.5 rounded-full", STATE_CLASS[state])} />
+    </span>
+  );
+}
+
 const STATE_CLASS: Record<RoleState, string> = {
-  running: "bg-sky-500 animate-pulse",
+  running: "bg-muted-foreground",
   waiting: "bg-amber-500",
   error: "bg-red-500",
   idle: "bg-muted-foreground/40",
@@ -102,8 +117,8 @@ const STATE_CLASS: Record<RoleState, string> = {
 };
 
 export function RoleIcon({ role, className }: { role: { icon: string; kind: RoleKind }; className?: string }) {
-  if (role.icon) return <span className={cn("inline-flex w-4 shrink-0 justify-center text-[13px] leading-none", className)} aria-hidden="true">{role.icon}</span>;
-  return <Icon name={KIND_ICON[role.kind]} className={cn("size-4 shrink-0", className)} aria-hidden="true" />;
+  if (role.icon) return <span data-role-icon="" className={cn("inline-flex w-4 shrink-0 justify-center text-[13px] leading-none", className)} aria-hidden="true">{role.icon}</span>;
+  return <span data-role-icon="" className="inline-flex shrink-0" aria-hidden="true"><Icon name={KIND_ICON[role.kind]} className={cn("size-4 shrink-0", className)} /></span>;
 }
 
 function RoleRow({ node, rows, onOpen, onEdit, dense }: {
@@ -142,7 +157,7 @@ function RoleRow({ node, rows, onOpen, onEdit, dense }: {
             {counts.errors > 0 ? <span className="ml-1 text-red-500" aria-label={`с ошибкой ${counts.errors}`}>⊗{counts.errors}</span> : null}
           </span>
         ) : null}
-        <span className={cn("size-2 shrink-0 rounded-full", STATE_CLASS[state])} role="img" aria-label={STATE_LABEL[state]} />
+        <StateMark state={state} />
         {!dense ? <span className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground sm:inline">{STATE_LABEL[state]}</span> : null}
       </button>
       {onEdit ? (
@@ -219,7 +234,7 @@ export function RosterPage() {
       <div className="mx-auto w-full max-w-3xl space-y-4">
         <div className="flex items-center gap-2">
           <p className="flex-1 text-sm text-muted-foreground">
-            Роли: помощник, оркестраторы проектов, агенты и внешние сотрудники. Нажатие открывает действующий тред роли.
+            Роли: агенты, оркестраторы проектов и внешние сотрудники. Нажатие открывает действующий тред роли.
           </p>
           <Button onClick={() => openDialog(ADD_REQUEST)}>
             <Icon name="Plus" className="size-4" />
@@ -328,7 +343,7 @@ export function RoleDialog() {
     setError(null);
     try {
       await rpc.call("roster_upsert", {
-        id: editing?.id,
+        ...(editing ? { id: editing.id } : {}),
         name: draft.name,
         kind: draft.kind,
         responsibility: draft.responsibility,
@@ -467,23 +482,6 @@ function useBadge() {
   return waiting > 0 ? { count: waiting, tone: "warning" as const, label: `ждут владельца: ${waiting}` } : null;
 }
 
-/** Row mark for lists that draw metadata (Machine Tabs always; bb's list with Metadata on). */
-function RoleMark({ thread, data }: ExperimentalThreadRowMetadataProps<ResolvedRole[] | null>) {
-  const own = data ? rolesForThread(data, thread.id) : [];
-  const role = own[0];
-  if (!role) return null;
-  const label = `${KIND_LABEL[role.kind]}: ${role.name}`;
-  return (
-    <span className="inline-flex items-center text-amber-500" title={label} aria-label={label} role="img" data-agent-roster-mark="">
-      <RoleIcon role={role} className="size-3.5 w-3.5 text-[11px]" />
-    </span>
-  );
-}
-
-function useMarkData() {
-  return useRoles();
-}
-
 function useActionData() {
   const rpc = useRpc<typeof rpcContract>();
   const roles = useRoles();
@@ -541,18 +539,12 @@ export default definePluginApp((app) => {
     experimental_useBadge: useBadge,
   });
 
-  app.slots.experimental_threadRowMetadata<ResolvedRole[] | null>({
-    id: "role-mark",
-    order: 1,
-    useData: useMarkData,
-    component: RoleMark,
-  });
-
   app.slots.experimental_threadAction({
     id: "role",
     title: "Роль агента",
     icon: "agent-roster/crown",
     group: experimental_THREAD_ACTION_GROUPS.organize,
+    order: 100,
     useData: useActionData,
     item: ({ thread, data }) => {
       const own = rolesForThread(data.roles, thread.id)[0];
@@ -572,7 +564,7 @@ export default definePluginApp((app) => {
     title: "Снять роль",
     icon: "agent-roster/crown",
     group: experimental_THREAD_ACTION_GROUPS.organize,
-    order: 1,
+    order: 101,
     useData: useActionData,
     item: ({ thread, data }) => {
       const own = rolesForThread(data.roles, thread.id)[0];
