@@ -218,6 +218,9 @@ describe("part B: role marks on thread icons through Machine Tabs", () => {
     expect(list.iconMarks).toBe(true);
     const last = () => Object.fromEntries(sent.at(-1)!.marks.map((m) => [m.threadId, `${m.glyph}/${m.tone}`]));
     expect(last()).toEqual({ thr_a: "crown/accent", thr_b: "crown/muted", thr_c: "crown/neutral" });
+    const byThread = Object.fromEntries(sent.at(-1)!.marks.map((m) => [m.threadId, m as unknown as { place: string; size: string }]));
+    expect(byThread.thr_a).toMatchObject({ place: "top", size: "large" });
+    expect(byThread.thr_c).toMatchObject({ place: "top", size: "normal" });
     await cli(h, ["set-thread", "orch", "thr_d"]);
     await h.harness.behavior.callRpc("roster_list", null);
     expect(last()).toEqual({ thr_a: "crown/accent", thr_b: "crown/muted", thr_d: "crown/neutral" });
@@ -290,5 +293,21 @@ describe("0.3: orchestrator rules and the AGENTS.md section", () => {
     expect(appendSection("", "S")).toBe("S");
     expect(hasSection("### Роль: Site (beta)", "Site (beta)")).toBe(true);
     expect(hasSection("## Роль: Sitex", "Site")).toBe(false);
+  });
+});
+
+describe("0.3.1: Telegram on the thread icon", () => {
+  it("a role with a Telegram channel gets a plane in the corner of its active thread's icon", async () => {
+    const sent: { marks: { threadId: string; glyph: string; place: string }[] }[] = [];
+    const h = await setup({ thr_a: {} });
+    h.harness.sdk.stub("plugins.callRpc", async ({ pluginId, method, input }: { pluginId: string; method: string; input: never }) => {
+      if (pluginId === "machine-tabs" && method === "thread_marks_replace") { sent.push(input); return { count: 1 }; }
+      if (method === "status") return { bot: "some_bot", chatBindings: [{ topicId: 0, projectId: "p", threadId: "thr_a", ready: true }] };
+      throw new Error("no");
+    });
+    await cli(h, ["add", "--name", "Main", "--kind", "agent", "--thread", "thr_a", "--primary", "on"]);
+    await h.harness.behavior.callRpc("roster_list", null);
+    const marks = sent.at(-1)!.marks.filter((m) => m.threadId === "thr_a").map((m) => `${m.glyph}@${m.place}`).sort();
+    expect(marks).toEqual(["crown@top", "telegram@corner"]);
   });
 });

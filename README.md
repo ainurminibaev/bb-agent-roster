@@ -27,6 +27,12 @@ name, icon and place in the hierarchy stay.
   plugin's only colour, a calm gold; marking another record main clears the old one.
   A role with several threads: the active one gets the crown, the others the same
   crown muted ("резервный тред роли").
+- **Composite icon (0.3.1)**: the record and its thread look alike — the project's
+  logo (monochrome) wearing the crown on top, the provider glyph in its corner, a
+  small Telegram plane in the bottom-right corner when the role is on Telegram. The
+  main record is a large gold crown. In Machine Tabs' list this comes through its
+  thread marks (`place: top`, `size: large` for the main record, a `telegram`
+  corner mark).
 - **Role mark on thread rows**: one small mark before the row title (next to the
   project icon), drawn by a stylesheet; bb's own state glyph on the right (running,
   unread, error, waiting) is never replaced. Works in bb's list and Machine Tabs.

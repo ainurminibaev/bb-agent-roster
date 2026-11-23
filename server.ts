@@ -470,12 +470,19 @@ export default async function plugin(bb: BbPluginApi) {
   let lastMarks: string | null = null;
   let lastMarksAt = 0;
   async function syncIconMarks(roles: ResolvedRole[]): Promise<boolean> {
-    const marks: { threadId: string; glyph: "crown" | "link"; tone: "neutral" | "accent" | "muted"; label: string }[] = [];
+    type IconMark = { threadId: string; glyph: "crown" | "link" | "telegram"; tone: "neutral" | "accent" | "muted"; place: "top" | "corner"; size: "normal" | "large"; label: string };
+    const marks: IconMark[] = [];
     for (const role of roles) {
       for (const threadId of threadIdsOf(role)) {
         const m = rowMarkFor(roles, threadId);
         if (!m || m.roleId !== role.id) continue;
-        marks.push({ threadId, glyph: m.glyph, tone: m.reserve ? "muted" : m.tone, label: m.label });
+        // The crown is worn over the thread's icon; the main record's is gold and larger.
+        marks.push({ threadId, glyph: m.glyph, tone: m.reserve ? "muted" : m.tone, place: m.glyph === "crown" ? "top" : "corner", size: role.primary ? "large" : "normal", label: m.label });
+      }
+      // A Telegram channel: a small plane in the corner of the active thread's icon.
+      const channel = (role.channels ?? []).find((c) => c.kind === "telegram");
+      if (channel && role.active.kind === "thread") {
+        marks.push({ threadId: role.active.threadId, glyph: "telegram", tone: "neutral", place: "corner", size: "normal", label: channel.label });
       }
     }
     const key = JSON.stringify(marks);

@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
+import type * as React from "react";
 import type { ExperimentalThreadRowMetadataProps } from "@get-bb/plugin-sdk/app";
 import {
   definePluginApp,
@@ -153,25 +154,43 @@ export function ChannelMark({ label }: { label: string }) {
 /** The only colour the plugin draws: the main record's crown — one calm gold for light and dark themes. */
 export const GOLD = "#c9a227";
 
+const CROWN_PATH = "M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z";
+const TELEGRAM_PATH = "M21.4 3.6 2.9 10.8c-1.2.5-1.2 1.2-.2 1.5l4.7 1.5 1.8 5.6c.2.6.4.8.9.8.4 0 .6-.2.9-.4l2.3-2.2 4.8 3.5c.9.5 1.5.2 1.7-.8L22.9 5c.3-1.3-.5-1.9-1.5-1.4Z";
+
+function Glyph({ path, size, className, style }: { path: string; size: number; className?: string; style?: React.CSSProperties }) {
+  return <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor" aria-hidden="true" className={className} style={style}><path d={path} /></svg>;
+}
+
 /**
- * One role icon. Main picture: the owner's own icon if set, else the project's
- * logo (monochrome), else the role mark itself — the crown (gold for the main
- * record), or the link glyph for an external employee. When the main picture is
- * not the crown, the crown sits small in the corner.
+ * The record's composite icon, the same as its thread's icon in the list:
+ * back layer — the project's logo (monochrome) or the owner's own icon, with the
+ * crown worn on top, centred; no logo — the crown alone, larger. The main
+ * record's crown is gold and larger. A Telegram channel adds a small plane in
+ * the bottom-right corner. An external employee keeps the link glyph.
  */
-export function RoleIcon({ role, className, logo }: { role: { icon: string; kind: RoleKind; primary?: boolean }; className?: string; logo?: string | null }) {
+export function RoleIcon({ role, className, logo, telegram }: { role: { icon: string; kind: RoleKind; primary?: boolean }; className?: string; logo?: string | null; telegram?: string | null }) {
   const external = role.kind === "external";
-  const useLogo = !role.icon && !external && !!logo;
-  const corner = !external && (role.icon || useLogo);
-  const crownStyle = role.primary ? { color: GOLD } : undefined;
+  // The main record is just a large gold crown (its threads in the list wear it over the project logo).
+  const base = !external && !role.primary && (role.icon || logo) ? (role.icon ? "icon" : "logo") : null;
+  const gold = role.primary ? { color: GOLD } : undefined;
   return (
-    <span data-role-icon="" data-primary={role.primary ? "" : undefined} className={cn("relative inline-flex size-4 shrink-0 items-center justify-center", className)} aria-hidden="true">
-      {role.icon ? <span className="text-[13px] leading-none">{role.icon}</span>
-        : useLogo ? <img src={logo!} alt="" className="size-4 rounded-[4px] object-contain opacity-80" style={{ filter: "grayscale(1)" }} />
-        : <span className="inline-flex" style={crownStyle}><Icon name={KIND_ICON[role.kind]} className="size-4" /></span>}
-      {corner ? (
-        <span data-kind-corner="" className="absolute -bottom-1 -right-1 flex size-[11px] items-center justify-center rounded-full bg-sidebar text-muted-foreground" style={crownStyle}>
-          <Icon name={KIND_ICON[role.kind]} className="size-[9px]" />
+    <span data-role-icon="" data-primary={role.primary ? "" : undefined} data-base={base ?? (external ? "link" : "crown")}
+      className={cn("relative inline-flex size-5 shrink-0 items-end justify-center text-muted-foreground", className)} aria-hidden="true">
+      {external ? <span className="flex size-5 items-center justify-center"><Icon name={KIND_ICON.external} className="size-4" /></span>
+        : base ? (
+          <>
+            {base === "icon"
+              ? <span className="mb-px text-[12px] leading-none">{role.icon}</span>
+              : <img src={logo!} alt="" className="size-3 rounded-[3px] object-contain opacity-80" style={{ filter: "grayscale(1)" }} />}
+            <span data-crown="top" className="absolute left-1/2 top-[-7px] -translate-x-1/2" style={gold}>
+              <Glyph path={CROWN_PATH} size={role.primary ? 15 : 13} />
+            </span>
+          </>
+        )
+        : <span data-crown="alone" className="flex size-5 items-center justify-center" style={gold}><Glyph path={CROWN_PATH} size={role.primary ? 20 : 16} /></span>}
+      {telegram ? (
+        <span data-telegram-corner="" title={telegram} className="absolute -bottom-1 -right-1 flex size-[11px] items-center justify-center rounded-full bg-sidebar">
+          <Glyph path={TELEGRAM_PATH} size={8} />
         </span>
       ) : null}
     </span>
@@ -461,7 +480,7 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
                 onClick={(e) => { if (role.active.kind === "external") navigate.openUrl(role.active.url); else openDialog({ mode: "edit", roleId: role.id }); closeMobileDrawer(e.currentTarget); }} />
             )}
             <span data-agent-roster-name-line="" className="pointer-events-none relative flex h-5 min-w-0 items-center gap-2 text-sm">
-              <RoleIcon role={role} logo={projectLogo} />
+              <RoleIcon role={role} logo={projectLogo} telegram={(role.channels ?? []).find((c) => c.kind === "telegram")?.label ?? null} />
               {/* The project wraps to a hidden second line when fewer than ~5 characters of it fit: no lone dash. */}
               <span data-agent-roster-title="" className="flex h-5 min-w-0 flex-1 flex-wrap items-baseline overflow-hidden leading-5">
                 <span className={cn("max-w-full shrink-0 truncate", active && "font-medium")}>{role.name}</span>
@@ -476,7 +495,6 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
                   ждёт
                 </button>
               ) : null}
-              {(role.channels ?? []).map((c) => <ChannelMark key={c.kind} label={c.label} />)}
               <StateMark state={summary.state} label={label} />
               <button type="button" data-agent-roster-toggle="" aria-label={isOpen ? `Свернуть ${role.name}` : `Раскрыть ${role.name}`} aria-expanded={isOpen}
                 disabled={!canExpand}

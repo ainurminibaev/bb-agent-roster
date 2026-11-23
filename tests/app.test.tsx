@@ -304,8 +304,10 @@ describe("0.2: channels and project work in the row", () => {
     await waitFor(() => expect(host.querySelectorAll("[data-agent-roster-role]")).toHaveLength(2));
     const lead = host.querySelector('[data-agent-roster-role="lead"]')!;
     const site = host.querySelector('[data-agent-roster-role="site"]')!;
-    expect(lead.querySelector('[data-agent-roster-channel="telegram"]')!.getAttribute("title")).toContain("Telegram");
-    expect(site.querySelector("[data-agent-roster-channel]")).toBeNull();
+    // Telegram is a small plane on the record's icon, not a mark on the right of the row.
+    expect(lead.querySelector("[data-role-icon] [data-telegram-corner]")!.getAttribute("title")).toContain("Telegram");
+    expect(site.querySelector("[data-telegram-corner]")).toBeNull();
+    expect(lead.querySelector("[data-agent-roster-line] > span [data-agent-roster-channel]")).toBeNull();
     expect(lead.querySelectorAll("[data-role-icon]")).toHaveLength(1);
     expect(site.querySelector("[data-agent-roster-work]")!.textContent!.replace(/\s/g, "")).toBe("↳1·1");
     const toggle = site.querySelector("[data-agent-roster-toggle]") as HTMLButtonElement;
@@ -387,17 +389,23 @@ describe("0.2.1: go to project and the role icon", () => {
     expect(revealProject("p1")).toBe(true);
     expect(scrolled).toBe(1);
   });
-  it("an orchestrator with a project logo: the logo (monochrome) plus the kind in the corner — still one role icon", () => {
-    const r = renderSlot({ component: RoleIcon as never }, { role: { icon: "", kind: "orchestrator" }, logo: "data:image/svg+xml;base64,AA" } as never);
-    expect(r.container.querySelectorAll("[data-role-icon]")).toHaveLength(1);
-    const img = r.container.querySelector("img")!;
-    expect(img.getAttribute("style")).toContain("grayscale(1)");
-    expect(r.container.querySelector("[data-kind-corner]")).not.toBeNull();
-    r.lifecycle.unmount();
+  it("composite icon: the project logo wears the crown on top; no logo — the crown alone; the main record's crown is gold and larger", () => {
+    const withLogo = renderSlot({ component: RoleIcon as never }, { role: { icon: "", kind: "orchestrator" }, logo: "data:image/svg+xml;base64,AA" } as never);
+    expect(withLogo.container.querySelectorAll("[data-role-icon]")).toHaveLength(1);
+    expect(withLogo.container.querySelector("img")!.getAttribute("style")).toContain("grayscale(1)");
+    expect(withLogo.container.querySelector('[data-crown="top"] svg')!.getAttribute("width")).toBe("13");
+    withLogo.lifecycle.unmount();
     const plain = renderSlot({ component: RoleIcon as never }, { role: { icon: "", kind: "agent" }, logo: null } as never);
     expect(plain.container.querySelector("img")).toBeNull();
-    expect(plain.container.querySelector("[data-kind-corner]")).toBeNull();
+    expect(plain.container.querySelector('[data-crown="alone"] svg')!.getAttribute("width")).toBe("16");
     plain.lifecycle.unmount();
+    const main = renderSlot({ component: RoleIcon as never }, { role: { icon: "", kind: "agent", primary: true }, logo: "data:image/svg+xml;base64,AA", telegram: "Telegram: чат" } as never);
+    expect(main.container.querySelector("img")).toBeNull();
+    const crown = main.container.querySelector('[data-crown="alone"]') as HTMLElement;
+    expect(crown.getAttribute("style")).toContain("color");
+    expect(crown.querySelector("svg")!.getAttribute("width")).toBe("20");
+    expect(main.container.querySelector("[data-telegram-corner]")!.getAttribute("title")).toBe("Telegram: чат");
+    main.lifecycle.unmount();
   });
 });
 
