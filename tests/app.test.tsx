@@ -473,3 +473,28 @@ describe("0.3.3: expanded record — live executors first, archived folded", () 
     window.localStorage.clear();
   });
 });
+
+describe("0.4.1: hovering a record moves nothing", () => {
+  it("no title on the record, no «go to project» icon in the row, nothing appears in the row's flow on hover", async () => {
+    machineTabsSidebar();
+    const scripts = await mountPluginContentScripts(app, { pluginId: "agent-roster" });
+    await frame();
+    const slot = renderSlot(app.appOverlays[0]!, {}, {
+      rpc: { roster_list: () => ({ roles: ROLES, launchDocUrl: null }), roster_activity: () => ({}) } as never,
+      sidebarThreads: { threads: [{ ...row("thr_lead", null), title: "lead", projectId: "p" }, { ...row("thr_site", null), title: "site", projectId: "p" }] as never },
+    });
+    const host = document.querySelector(`[${HOST_ATTR}]`)!;
+    await waitFor(() => expect(host.querySelectorAll("[data-agent-roster-role]")).toHaveLength(2));
+    for (const line of host.querySelectorAll("[data-agent-roster-line]")) {
+      expect(line.hasAttribute("title")).toBe(false);
+      expect(line.querySelector("[data-agent-roster-reveal]")).toBeNull();
+      // Every element of the row is in the flow from the start: no `hidden` that turns into `flex` on hover.
+      for (const el of line.querySelectorAll("*")) expect((el.getAttribute("class") ?? "").split(/\s+/)).not.toContain("hidden");
+      const menu = line.querySelector("[data-agent-roster-menu-button]")!;
+      expect(menu.getAttribute("class")).toContain("invisible");
+      expect(menu.getAttribute("class")).toContain("group-hover/role:visible");
+    }
+    slot.lifecycle.unmount();
+    await scripts.lifecycle.dispose();
+  });
+});

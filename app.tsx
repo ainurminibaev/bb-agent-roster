@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type * as React from "react";
@@ -114,15 +114,16 @@ function useRows(): { rows: Row[]; byId: Map<string, Row> } {
 /** State like bb's thread rows: a spinner while working, otherwise a dot. */
 function StateMark({ state, label }: { state: RoleState; label?: string }) {
   const aria = label ?? STATE_LABEL[state];
+  const title = useContext(CardOpen) ? undefined : aria;
   if (state === "running" || state === "executors") {
     return (
-      <span data-state-mark="" data-spinning="" role="status" aria-label={aria} title={aria} className="inline-flex size-3.5 shrink-0 items-center justify-center text-muted-foreground">
+      <span data-state-mark="" data-spinning="" role="status" aria-label={aria} title={title} className="inline-flex size-3.5 shrink-0 items-center justify-center text-muted-foreground">
         <Icon name="Loading" className="size-3 animate-spin" />
       </span>
     );
   }
   return (
-    <span data-state-mark="" role="status" aria-label={aria} title={aria} className="inline-flex size-3.5 shrink-0 items-center justify-center">
+    <span data-state-mark="" role="status" aria-label={aria} title={title} className="inline-flex size-3.5 shrink-0 items-center justify-center">
       <span className={cn("size-1.5 rounded-full", STATE_CLASS[state])} />
     </span>
   );
@@ -200,6 +201,7 @@ export function Crown({ width, gold, className }: { width: number; gold?: boolea
  * employee keeps the link.
  */
 export function RoleIcon({ role, className, logo, telegram }: { role: { icon: string; kind: RoleKind; primary?: boolean }; className?: string; logo?: string | null; telegram?: string | null }) {
+  const titlesOff = useContext(CardOpen);
   const external = role.kind === "external";
   const base = !external && !role.primary && (role.icon || logo) ? (role.icon ? "icon" : "logo") : null;
   return (
@@ -216,7 +218,7 @@ export function RoleIcon({ role, className, logo, telegram }: { role: { icon: st
         )
         : <span data-crown="alone" className="absolute left-[-1px] top-0 leading-[0]"><Crown width={role.primary ? 21 : 18} gold={role.primary} /></span>}
       {telegram ? (
-        <span data-telegram-corner="" title={telegram} className="absolute -right-1 bottom-0 flex size-[11px] items-center justify-center pb-px">
+        <span data-telegram-corner="" title={titlesOff ? undefined : telegram} aria-label={telegram} className="absolute -right-1 bottom-0 flex size-[11px] items-center justify-center pb-px">
           <svg viewBox="0 0 24 24" width={10} height={10} aria-hidden="true" style={{ overflow: "visible" }}>
             <path d={TELEGRAM_PATH} fill="currentColor" stroke="var(--sidebar)" strokeWidth={3} strokeLinejoin="round" paintOrder="stroke" />
           </svg>
@@ -297,7 +299,7 @@ function RecordMenu({ role, dense, projectId, onWrite }: { role: ResolvedRole; d
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button type="button" aria-label={`Действия: ${role.name}`} data-agent-roster-menu-button=""
-          className={cn("size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-sidebar-foreground data-[state=open]:flex", dense ? "hidden group-hover/role:flex group-focus-within/role:flex" : "flex")}>
+          className={cn("flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-sidebar-foreground data-[state=open]:visible", dense && "invisible group-hover/role:visible group-focus-within/role:visible")}>
           <svg viewBox="0 0 24 24" className="size-3.5" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
         </button>
       </DropdownMenuTrigger>
@@ -495,6 +497,7 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
   const { threadId: currentThreadId } = useBbContext();
   const isOpen = useExpanded(role.id);
   const [writing, setWriting] = useState(false);
+  const [cardOpen, setCardOpen] = useState(false);
   const allRoles = useRoles() ?? [];
   const summary = summarize(role.active, rows.rows, rows.byId);
   const work = projectWork(role, role.active, rows.rows, allRoles);
@@ -502,7 +505,6 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
   const quietWithWork = anyWork && (summary.state === "idle" || summary.state === "waiting");
   const workLabel = `работают: свои ${work.own.length}, чужие ${work.others.length}`;
   const label = quietWithWork ? `${summaryLabel(summary)}; ${workLabel}` : summaryLabel(summary);
-  const short = `${role.name} — ${KIND_LABEL[role.kind]}; ${label}`;
   const threadId = role.active.kind === "thread" ? role.active.threadId : null;
   const canExpand = threadId !== null;
   const active = threadId !== null && threadId === currentThreadId;
@@ -513,9 +515,10 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
   const projectLogo = useProjectLogo(projectId);
   return (
     <li data-agent-roster-role={role.id} data-state={summary.state} data-active={active ? "" : undefined}>
-      <HoverCard openDelay={900} closeDelay={120}>
+      <CardOpen.Provider value={cardOpen}>
+      <HoverCard openDelay={450} closeDelay={200} onOpenChange={setCardOpen}>
         <HoverCardTrigger asChild>
-          <div data-agent-roster-line="" title={short}
+          <div data-agent-roster-line=""
             className={cn("group/role relative flex items-center gap-2 rounded-md py-0.5 pr-1 hover:bg-sidebar-accent", active && "bg-sidebar-accent")}
             style={{ paddingLeft: leftPad }}>
             {threadId ? (
@@ -535,7 +538,7 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
               <Counter own={work.own.length} others={work.others.length} total={summary.total} />
               {summary.errors > 0 ? <span className="shrink-0 text-[11px] tabular-nums text-red-500" aria-label={`с ошибкой ${summary.errors}`}>⊗{summary.errors}</span> : null}
               {summary.waitingThreadId ? (
-                <button type="button" data-agent-roster-waiting="" title="Ждёт тебя: открыть тред, который ждёт твоего ответа" aria-label="Ждёт тебя: открыть ждущий тред"
+                <button type="button" data-agent-roster-waiting="" title={cardOpen ? undefined : "Ждёт тебя: открыть тред, который ждёт твоего ответа"} aria-label="Ждёт тебя: открыть ждущий тред"
                   className="pointer-events-auto relative z-10 shrink-0 rounded-full bg-amber-500/15 px-1.5 text-[11px] font-medium leading-4 text-amber-600 hover:bg-amber-500/25"
                   onClick={(e) => { navigate.toThread(summary.waitingThreadId!); closeMobileDrawer(e.currentTarget); }}>
                   ждёт
@@ -548,13 +551,6 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
                 onClick={() => toggleExpanded(role.id)}>
                 <svg viewBox="0 0 24 24" className={cn("size-3.5 transition-transform", isOpen && "rotate-90")} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
               </button>
-              {projectId && revealSupported() ? (
-                <button type="button" data-agent-roster-reveal="" aria-label={`Перейти к проекту${projectName ? ` ${projectName}` : ""}`} title="Перейти к проекту в списке"
-                  className="pointer-events-auto relative z-10 hidden size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-sidebar-foreground group-hover/role:flex"
-                  onClick={() => { if (!revealProject(projectId)) navigate.toProject(projectId); }}>
-                  <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 7h6l2 2h10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><path d="M12 13h6M15 10l3 3-3 3" /></svg>
-                </button>
-              ) : null}
               <span className="pointer-events-auto relative z-10 flex"><RecordMenu role={role} dense={dense} projectId={projectId} onWrite={() => setWriting(true)} /></span>
             </span>
             <button type="button" data-agent-roster-status="" disabled={!canExpand} aria-label={`${second}. ${isOpen ? "Свернуть" : "Раскрыть"} исполнителей`}
@@ -565,10 +561,11 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
             </span>
           </div>
         </HoverCardTrigger>
-        <HoverCardContent side="right" align="start" className="w-80 p-3" data-agent-roster-card-popup="">
+        <HoverCardContent side="right" align="start" sideOffset={26} collisionPadding={8} className="w-80 p-3" data-agent-roster-card-popup="">
           <RoleCard role={role} rows={rows} />
         </HoverCardContent>
       </HoverCard>
+      </CardOpen.Provider>
       {writing ? <QuickMessage role={role} onDone={() => setWriting(false)} /> : null}
       {isOpen ? <Executors role={role} rows={rows} dense={dense} others={work.others} /> : null}
     </li>
@@ -611,12 +608,16 @@ function useProjectName(role: ResolvedRole, rows: { byId: Map<string, Row> }): s
   return (projects ?? []).find((p) => p.id === projectId)?.name ?? null;
 }
 
+/** While a record's details card is open, its small marks show no tooltip of their own. */
+const CardOpen = createContext(false);
+
 /** One counter style, like bb's "↳N": own · others while work runs, else the muted total. */
 function Counter({ own, others, total }: { own: number; others: number; total: number }) {
+  const cardOpen = useContext(CardOpen);
   if (own + others > 0) {
     const text = own === 0 ? `· ${others}` : others > 0 ? `↳${own} · ${others}` : `↳${own}`;
     const aria = own === 0 ? `не под управлением работают: ${others}` : `работают: свои ${own}${others > 0 ? `, чужие ${others}` : ""}`;
-    return <span data-agent-roster-work="" title={aria} aria-label={aria} className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{text}</span>;
+    return <span data-agent-roster-work="" title={cardOpen ? undefined : aria} aria-label={aria} className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{text}</span>;
   }
   if (total > 0) return <span data-agent-roster-total="" aria-label={`исполнителей ${total}`} className="shrink-0 text-[11px] tabular-nums text-muted-foreground/70">↳{total}</span>;
   return null;
@@ -624,6 +625,7 @@ function Counter({ own, others, total }: { own: number; others: number; total: n
 
 /** Details of a record: the long-hover card and the "Сведения" dialog show the same. */
 function RoleCard({ role, rows }: { role: ResolvedRole; rows: { rows: Row[]; byId: Map<string, Row> } }) {
+  const navigate = useBbNavigate();
   const rpc = useRpc<typeof rpcContract>();
   const { projects } = experimental_useSidebarThreads();
   const allRoles = useRoles() ?? [];
@@ -649,7 +651,9 @@ function RoleCard({ role, rows }: { role: ResolvedRole; rows: { rows: Row[]; byI
         {fact("Отвечает за", role.responsibility)}
         {fact("Подчиняется", role.parentName ?? "владельцу")}
         {role.kind === "orchestrator" ? fact("Правила", role.rulesEnabled ? "общие правила оркестратора включены" : "общие правила оркестратора выключены") : null}
-        {fact("Проект", project)}
+        {fact("Проект", project ? (projectId && revealSupported()
+          ? <button type="button" data-agent-roster-card-project="" className="text-left underline-offset-2 hover:underline" onClick={() => { if (!revealProject(projectId)) navigate.toProject(projectId); }}>{project}</button>
+          : project) : null)}
         {fact("Тред", threadId ? rows.byId.get(threadId)?.title ?? threadId : role.active.kind === "external" ? role.active.url : "нет действующего")}
         {fact("Сейчас", details?.activity ?? null)}
         {fact("Исполнители", `свои работают ${work.own.length}, чужие ${work.others.length}; всего под ролью ${summary.total}${summary.errors ? `, с ошибкой ${summary.errors}` : ""}`)}
