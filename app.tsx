@@ -154,7 +154,7 @@ export function ChannelMark({ label }: { label: string }) {
 /** The only colour the plugin draws: the main record's crown — one calm gold for light and dark themes. */
 export const GOLD = "#c9a227";
 
-const CROWN_PATH = "M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z";
+export const CROWN_PATH = "M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z";
 const TELEGRAM_PATH = "M21.4 3.6 2.9 10.8c-1.2.5-1.2 1.2-.2 1.5l4.7 1.5 1.8 5.6c.2.6.4.8.9.8.4 0 .6-.2.9-.4l2.3-2.2 4.8 3.5c.9.5 1.5.2 1.7-.8L22.9 5c.3-1.3-.5-1.9-1.5-1.4Z";
 
 function Glyph({ path, size, className, style }: { path: string; size: number; className?: string; style?: React.CSSProperties }) {
@@ -162,35 +162,36 @@ function Glyph({ path, size, className, style }: { path: string; size: number; c
 }
 
 /**
- * The record's composite icon, the same as its thread's icon in the list:
- * back layer — the project's logo (monochrome) or the owner's own icon, with the
- * crown worn on top, centred; no logo — the crown alone, larger. The main
- * record's crown is gold and larger. A Telegram channel adds a small plane in
- * the bottom-right corner. An external employee keeps the link glyph.
+ * The record's sign, 28px, the same idea as its thread's icon in the list: the
+ * project's logo (monochrome, 16px) wearing the crown — the crown sits on it,
+ * overlapping by a pixel. The main record is a large gold crown of the same
+ * footprint; without a logo, a large neutral crown. A Telegram channel adds a
+ * small plane in the bottom-right corner. An external employee keeps the link.
+ * One crown drawing everywhere; only size and tone differ.
  */
 export function RoleIcon({ role, className, logo, telegram }: { role: { icon: string; kind: RoleKind; primary?: boolean }; className?: string; logo?: string | null; telegram?: string | null }) {
   const external = role.kind === "external";
-  // The main record is just a large gold crown (its threads in the list wear it over the project logo).
   const base = !external && !role.primary && (role.icon || logo) ? (role.icon ? "icon" : "logo") : null;
-  const gold = role.primary ? { color: GOLD } : undefined;
   return (
     <span data-role-icon="" data-primary={role.primary ? "" : undefined} data-base={base ?? (external ? "link" : "crown")}
-      className={cn("relative inline-flex size-5 shrink-0 items-end justify-center text-muted-foreground", className)} aria-hidden="true">
-      {external ? <span className="flex size-5 items-center justify-center"><Icon name={KIND_ICON.external} className="size-4" /></span>
+      className={cn("relative block size-7 shrink-0 text-muted-foreground", className)} aria-hidden="true">
+      {external ? <span className="flex size-7 items-center justify-center"><Icon name={KIND_ICON.external} className="size-5" /></span>
         : base ? (
           <>
             {base === "icon"
-              ? <span className="mb-px text-[12px] leading-none">{role.icon}</span>
-              : <img src={logo!} alt="" className="size-3 rounded-[3px] object-contain opacity-80" style={{ filter: "grayscale(1)" }} />}
-            <span data-crown="top" className="absolute left-1/2 top-[-7px] -translate-x-1/2" style={gold}>
-              <Glyph path={CROWN_PATH} size={role.primary ? 15 : 13} />
+              ? <span className="absolute left-[6px] top-[12px] flex size-4 items-center justify-center text-[14px] leading-none">{role.icon}</span>
+              : <img src={logo!} alt="" className="absolute left-[6px] top-[12px] size-4 object-contain opacity-80" style={{ filter: "grayscale(1)" }} />}
+            <span data-crown="top" className="absolute left-[3px] top-[-4.4px] leading-[0] text-sidebar-foreground/85">
+              <Glyph path={CROWN_PATH} size={22} />
             </span>
           </>
         )
-        : <span data-crown="alone" className="flex size-5 items-center justify-center" style={gold}><Glyph path={CROWN_PATH} size={role.primary ? 20 : 16} /></span>}
+        : <span data-crown="alone" className={cn("absolute left-[-2px] top-[-2px] leading-[0]", !role.primary && "text-sidebar-foreground/85")} style={role.primary ? { color: GOLD } : undefined}>
+            <Glyph path={CROWN_PATH} size={32} />
+          </span>}
       {telegram ? (
-        <span data-telegram-corner="" title={telegram} className="absolute -bottom-1 -right-1 flex size-[11px] items-center justify-center rounded-full bg-sidebar">
-          <Glyph path={TELEGRAM_PATH} size={8} />
+        <span data-telegram-corner="" title={telegram} className="absolute -bottom-px -right-0.5 flex size-3 items-center justify-center rounded-full bg-sidebar">
+          <Glyph path={TELEGRAM_PATH} size={9} />
         </span>
       ) : null}
     </span>
@@ -462,7 +463,7 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
   const canExpand = threadId !== null;
   const active = threadId !== null && threadId === currentThreadId;
   const second = activity ?? (role.active.kind === "external" ? "в другом BB — откроется ссылка" : summaryLabel(summary));
-  const leftPad = dense ? 12 : 16;
+  const leftPad = dense ? 4 : 8;
   const projectName = useProjectName(role, rows);
   const projectId = useProjectId(role, rows);
   const projectLogo = useProjectLogo(projectId);
@@ -471,7 +472,7 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
       <HoverCard openDelay={900} closeDelay={120}>
         <HoverCardTrigger asChild>
           <div data-agent-roster-line="" title={short}
-            className={cn("group/role relative flex flex-col justify-center rounded-md py-1 pr-1 hover:bg-sidebar-accent", active && "bg-sidebar-accent")}
+            className={cn("group/role relative flex items-center gap-2 rounded-md py-1.5 pr-1 hover:bg-sidebar-accent", active && "bg-sidebar-accent")}
             style={{ paddingLeft: leftPad }}>
             {threadId ? (
               <ThreadLink threadId={threadId} href={rows.byId.get(threadId)?.href ?? null} label={`Открыть ${role.name}`} />
@@ -479,8 +480,9 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
               <button type="button" aria-label={`Открыть ${role.name}`} className="absolute inset-0 rounded-md"
                 onClick={(e) => { if (role.active.kind === "external") navigate.openUrl(role.active.url); else openDialog({ mode: "edit", roleId: role.id }); closeMobileDrawer(e.currentTarget); }} />
             )}
+            <RoleIcon role={role} logo={projectLogo} telegram={(role.channels ?? []).find((c) => c.kind === "telegram")?.label ?? null} className="pointer-events-none" />
+            <span data-agent-roster-text="" className="relative flex min-w-0 flex-1 flex-col">
             <span data-agent-roster-name-line="" className="pointer-events-none relative flex h-5 min-w-0 items-center gap-2 text-sm">
-              <RoleIcon role={role} logo={projectLogo} telegram={(role.channels ?? []).find((c) => c.kind === "telegram")?.label ?? null} />
               {/* The project wraps to a hidden second line when fewer than ~5 characters of it fit: no lone dash. */}
               <span data-agent-roster-title="" className="flex h-5 min-w-0 flex-1 flex-wrap items-baseline overflow-hidden leading-5">
                 <span className={cn("max-w-full shrink-0 truncate", active && "font-medium")}>{role.name}</span>
@@ -513,10 +515,10 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
             </span>
             <button type="button" data-agent-roster-status="" disabled={!canExpand} aria-label={`${second}. ${isOpen ? "Свернуть" : "Раскрыть"} исполнителей`}
               className="relative z-10 block h-4 w-full min-w-0 truncate pr-12 text-left text-[11px] leading-4 text-muted-foreground disabled:cursor-default"
-              style={{ paddingLeft: 24 }}
               onClick={() => toggleExpanded(role.id)}>
               {second}
             </button>
+            </span>
           </div>
         </HoverCardTrigger>
         <HoverCardContent side="right" align="start" className="w-80 p-3" data-agent-roster-card-popup="">

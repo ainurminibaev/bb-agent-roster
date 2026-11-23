@@ -249,7 +249,11 @@ describe("0.2: working with an agent from the block", () => {
     expect(site.querySelectorAll(":scope > *")).toHaveLength(1);
     const nameLine = site.querySelector("[data-agent-roster-name-line]")!;
     const kids = Array.from(nameLine.children);
-    expect(kids[0]!.hasAttribute("data-role-icon")).toBe(true);
+    // The sign stands left of both lines (name and status), centred on the record.
+    const line = site.querySelector("[data-agent-roster-line]")!;
+    const lineKids = Array.from(line.children).filter((c) => !c.hasAttribute("data-agent-roster-link"));
+    expect(lineKids[0]!.hasAttribute("data-role-icon")).toBe(true);
+    expect(lineKids[1]!.hasAttribute("data-agent-roster-text")).toBe(true);
     const toggleAt = kids.findIndex((c) => c.hasAttribute("data-agent-roster-toggle"));
     expect(toggleAt).toBeGreaterThan(kids.findIndex((c) => c.textContent === "Site"));
     await waitFor(() => expect(site.querySelector("[data-agent-roster-status]")?.textContent).toBe("Закончил: отчёт"));
@@ -393,17 +397,17 @@ describe("0.2.1: go to project and the role icon", () => {
     const withLogo = renderSlot({ component: RoleIcon as never }, { role: { icon: "", kind: "orchestrator" }, logo: "data:image/svg+xml;base64,AA" } as never);
     expect(withLogo.container.querySelectorAll("[data-role-icon]")).toHaveLength(1);
     expect(withLogo.container.querySelector("img")!.getAttribute("style")).toContain("grayscale(1)");
-    expect(withLogo.container.querySelector('[data-crown="top"] svg')!.getAttribute("width")).toBe("13");
+    expect(withLogo.container.querySelector('[data-crown="top"] svg')!.getAttribute("width")).toBe("22");
     withLogo.lifecycle.unmount();
     const plain = renderSlot({ component: RoleIcon as never }, { role: { icon: "", kind: "agent" }, logo: null } as never);
     expect(plain.container.querySelector("img")).toBeNull();
-    expect(plain.container.querySelector('[data-crown="alone"] svg')!.getAttribute("width")).toBe("16");
+    expect(plain.container.querySelector('[data-crown="alone"] svg')!.getAttribute("width")).toBe("32");
     plain.lifecycle.unmount();
     const main = renderSlot({ component: RoleIcon as never }, { role: { icon: "", kind: "agent", primary: true }, logo: "data:image/svg+xml;base64,AA", telegram: "Telegram: чат" } as never);
     expect(main.container.querySelector("img")).toBeNull();
     const crown = main.container.querySelector('[data-crown="alone"]') as HTMLElement;
     expect(crown.getAttribute("style")).toContain("color");
-    expect(crown.querySelector("svg")!.getAttribute("width")).toBe("20");
+    expect(crown.querySelector("svg")!.getAttribute("width")).toBe("32");
     expect(main.container.querySelector("[data-telegram-corner]")!.getAttribute("title")).toBe("Telegram: чат");
     main.lifecycle.unmount();
   });
@@ -420,5 +424,13 @@ describe("part B: one mark per row", () => {
     const r2 = renderSlot({ component: C }, { thread: { id: "thr_site" }, data: ROLES } as never);
     expect(r2.container.querySelectorAll("[data-agent-roster-mark]")).toHaveLength(1);
     r2.lifecycle.unmount();
+  });
+});
+
+import { readFileSync } from "node:fs";
+import { CROWN_PATH } from "../app";
+describe("0.3.2: one crown drawing", () => {
+  it("the declared crown icon and the sign's crown are the same shape", () => {
+    expect(readFileSync(`${process.cwd()}/icons/crown.svg`, "utf8")).toContain(`d="${CROWN_PATH}"`);
   });
 });
