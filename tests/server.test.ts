@@ -133,7 +133,7 @@ describe("server 0.2", () => {
   });
   it("activity reads the last task while running and the last answer when idle", async () => {
     const h = await setup({ thr_a: {} });
-    h.harness.sdk.stub("threads.conversationOutline", async () => ({ items: [{ role: "user", preview: "build it" }, { role: "assistant", preview: "built" }] }) as never);
+    h.harness.sdk.stub("threads.conversationOutline", async () => ({ items: [{ role: "user", preview: "build it" }, { role: "assistant", preview: "built" }, { role: "user", preview: "[bb system] note" }] }) as never);
     const out = await h.harness.behavior.callRpc("roster_activity", { threadIds: ["thr_a", "thr_missing"] });
     expect(out).toEqual({ thr_a: "Закончил: built", thr_missing: null });
   });

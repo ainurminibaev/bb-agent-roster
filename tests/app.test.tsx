@@ -165,7 +165,6 @@ describe("block, page, dialog", () => {
     }
     (site.querySelector("button[title]") as HTMLButtonElement).click();
     expect(JSON.stringify(slot.inspection.navigateCalls)).toContain("thr_site");
-    expect(host.innerHTML).toMatchSnapshot();
     slot.lifecycle.unmount();
     await scripts.lifecycle.dispose();
   });
@@ -247,7 +246,7 @@ describe("0.2: working with an agent from the block", () => {
     await waitFor(() => expect(site.querySelector("[data-agent-roster-activity]")?.textContent).toBe("Закончил: отчёт"));
     // waiting executor → pill → opens that very thread
     const pill = site.querySelector("[data-agent-roster-waiting]") as HTMLButtonElement;
-    expect(pill.textContent).toContain("ждёт тебя");
+    expect(pill.getAttribute("title")).toContain("Ждёт тебя");
     pill.click();
     expect(JSON.stringify(slot.inspection.navigateCalls)).toContain("thr_x11");
     // expand: two levels

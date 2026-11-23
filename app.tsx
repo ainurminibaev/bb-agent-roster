@@ -380,12 +380,10 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
           <span className="flex w-full min-w-0 items-center gap-1.5 text-sm">
             <RoleIcon role={role} />
             <span className="min-w-0 flex-1 truncate">{role.name}</span>
-            {summary.total > 0 ? (
-              <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground" aria-label={`исполнителей ${summary.total}`}>
-                ↳{summary.total}
-                {summary.errors > 0 ? <span className="ml-1 text-red-500" aria-label={`с ошибкой ${summary.errors}`}>⊗{summary.errors}</span> : null}
-              </span>
+            {summary.total > 0 && !anyWork ? (
+              <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground" aria-label={`исполнителей ${summary.total}`}>↳{summary.total}</span>
             ) : null}
+            {summary.errors > 0 ? <span className="shrink-0 text-[11px] tabular-nums text-red-500" aria-label={`с ошибкой ${summary.errors}`}>⊗{summary.errors}</span> : null}
             {work.own.length + work.others.length > 0 ? (
               <span data-agent-roster-work="" title={workLabel} aria-label={workLabel} className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
                 {work.own.length} · {work.others.length}
@@ -399,14 +397,14 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
           {activity ? <span data-agent-roster-activity="" className="block w-full truncate pl-[22px] text-[11px] text-muted-foreground">{activity}</span> : null}
         </button>
         {summary.waitingThreadId ? (
-          <button type="button" data-agent-roster-waiting="" title="Открыть тред, который ждёт твоего ответа"
+          <button type="button" data-agent-roster-waiting="" title="Ждёт тебя: открыть тред, который ждёт твоего ответа" aria-label="Ждёт тебя: открыть ждущий тред"
             className="mr-0.5 shrink-0 rounded-full bg-amber-500/15 px-1.5 text-[11px] font-medium text-amber-600 hover:bg-amber-500/25"
             onClick={() => navigate.toThread(summary.waitingThreadId!)}>
-            ждёт тебя
+            ждёт
           </button>
         ) : null}
         <button type="button" aria-label={`Действия: ${role.name}`} aria-haspopup="menu" data-agent-roster-menu-button=""
-          className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-60 hover:bg-sidebar-accent hover:opacity-100 focus-visible:opacity-100"
+          className={cn("size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent", dense && !menu ? "hidden group-hover/role:flex group-focus-within/role:flex" : "flex")}
           onClick={() => setMenu((v) => !v)}>
           <svg viewBox="0 0 24 24" className="size-3.5" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
         </button>

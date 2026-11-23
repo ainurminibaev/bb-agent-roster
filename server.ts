@@ -195,13 +195,16 @@ export default async function plugin(bb: BbPluginApi) {
   async function bridgeBindings() {
     const pluginId = current.bridgePluginId.trim();
     if (!pluginId) return parseBridgeStatus(null);
-    if (bridgeStatus && Date.now() - bridgeStatus.at < 15_000) return bridgeStatus.value;
-    let value = parseBridgeStatus(null);
+    if (bridgeStatus && Date.now() - bridgeStatus.at < 30_000) return bridgeStatus.value;
     try {
-      value = parseBridgeStatus(await bb.sdk.plugins.callRpc({ pluginId, method: "status", input: null, outputSchema: pairStatusSchema, signal: AbortSignal.timeout(BRIDGE_TIMEOUT_MS) }));
-    } catch { /* no bridge: no channel marks */ }
-    bridgeStatus = { at: Date.now(), value };
-    return value;
+      const value = parseBridgeStatus(await bb.sdk.plugins.callRpc({ pluginId, method: "status", input: null, outputSchema: pairStatusSchema, signal: AbortSignal.timeout(5_000) }));
+      bridgeStatus = { at: Date.now(), value };
+      return value;
+    } catch {
+      // A slow or busy bridge keeps the last answer for a while; no bridge at all → no channel marks.
+      if (bridgeStatus && Date.now() - bridgeStatus.at < 5 * 60_000) return bridgeStatus.value;
+      return parseBridgeStatus(null);
+    }
   }
 
   async function resolveAll(): Promise<ResolvedRole[]> {
@@ -289,7 +292,11 @@ export default async function plugin(bb: BbPluginApi) {
       const outline = (await bb.sdk.threads.conversationOutline({ threadId } as never)) as unknown as { items?: { role?: string; preview?: string }[] };
       const items = Array.isArray(outline?.items) ? outline.items : [];
       const last = (role: string) => {
-        for (let i = items.length - 1; i >= 0; i -= 1) if (items[i]?.role === role && typeof items[i]?.preview === "string") return items[i]!.preview!;
+        for (let i = items.length - 1; i >= 0; i -= 1) {
+          const preview = items[i]?.preview;
+          // bb's own service notes are not a task: skip them.
+          if (items[i]?.role === role && typeof preview === "string" && !preview.startsWith("[bb system]")) return preview;
+        }
         return null;
       };
       const line = activityLine(running, last("user"), last("assistant"));
