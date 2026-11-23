@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -13,7 +13,7 @@ import type { rpcContract } from "./server";
 import {
   type Binding,
   buildTree,
-  executorCounts,
+  executorTree,
   flattenTree,
   KIND_ICON,
   KIND_LABEL,
@@ -23,6 +23,9 @@ import {
   type RoleKind,
   roleState,
   type RoleState,
+  summarize,
+  summaryLabel,
+  projectWork,
   rolesForThread,
   type RowFacts,
   STATE_LABEL,
@@ -30,6 +33,7 @@ import {
 } from "./model";
 import { getState, openDialog, setState, subscribe, useStore, type DialogRequest } from "./lib/store";
 import { HOST_ATTR, keepPlaced } from "./lib/anchor";
+import { mountRowMarks } from "./lib/row-marks";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Icon } from "@/components/ui/icon";
@@ -73,10 +77,14 @@ function useRoles(): ResolvedRole[] | null {
 }
 
 /** bb's sidebar rows, reduced to what the module reads. */
-function useRows(): { rows: RowFacts[]; byId: Map<string, RowFacts> } {
+export interface Row extends RowFacts {
+  title: string;
+  projectId: string | null;
+}
+function useRows(): { rows: Row[]; byId: Map<string, Row> } {
   const { threads } = experimental_useSidebarThreads();
   return useMemo(() => {
-    const rows: RowFacts[] = (threads ?? []).map((t) => ({
+    const rows: Row[] = (threads ?? []).map((t) => ({
       id: t.id,
       parentThreadId: t.parentThreadId,
       status: String(t.status),
@@ -84,6 +92,8 @@ function useRows(): { rows: RowFacts[]; byId: Map<string, RowFacts> } {
       hasPendingInteraction: Boolean(t.hasPendingInteraction),
       isArchived: Boolean(t.isArchived),
       isHidden: Boolean(t.isHidden),
+      title: String(t.displayTitle ?? t.title ?? t.id),
+      projectId: typeof t.projectId === "string" ? t.projectId : null,
     }));
     return { rows, byId: new Map(rows.map((r) => [r.id, r])) };
   }, [threads]);
@@ -92,16 +102,17 @@ function useRows(): { rows: RowFacts[]; byId: Map<string, RowFacts> } {
 // ---------- pieces ----------
 
 /** State like bb's thread rows: a spinner while working, otherwise a dot. */
-function StateMark({ state }: { state: RoleState }) {
-  if (state === "running") {
+function StateMark({ state, label }: { state: RoleState; label?: string }) {
+  const aria = label ?? STATE_LABEL[state];
+  if (state === "running" || state === "executors") {
     return (
-      <span data-state-mark="" role="status" aria-label={STATE_LABEL[state]} className="inline-flex size-3.5 shrink-0 items-center justify-center">
-        <span className="size-3 animate-spin rounded-full border-[1.5px] border-muted-foreground/30 border-t-muted-foreground" />
+      <span data-state-mark="" role="status" aria-label={aria} title={aria} className="inline-flex size-3.5 shrink-0 items-center justify-center">
+        <span className={cn("size-3 animate-spin rounded-full border-[1.5px]", state === "running" ? "border-muted-foreground/30 border-t-muted-foreground" : "border-muted-foreground/20 border-t-muted-foreground/60")} />
       </span>
     );
   }
   return (
-    <span data-state-mark="" role="status" aria-label={STATE_LABEL[state]} className="inline-flex size-3.5 shrink-0 items-center justify-center">
+    <span data-state-mark="" role="status" aria-label={aria} title={aria} className="inline-flex size-3.5 shrink-0 items-center justify-center">
       <span className={cn("size-1.5 rounded-full", STATE_CLASS[state])} />
     </span>
   );
@@ -109,6 +120,7 @@ function StateMark({ state }: { state: RoleState }) {
 
 const STATE_CLASS: Record<RoleState, string> = {
   running: "bg-muted-foreground",
+  executors: "bg-muted-foreground",
   waiting: "bg-amber-500",
   error: "bg-red-500",
   idle: "bg-muted-foreground/40",
@@ -116,55 +128,292 @@ const STATE_CLASS: Record<RoleState, string> = {
   external: "bg-violet-400",
 };
 
+/** A channel the record is reachable by (not a role icon): Telegram's paper plane. */
+function ChannelMark({ label }: { label: string }) {
+  return (
+    <span data-agent-roster-channel="telegram" role="img" aria-label={label} title={label} className="inline-flex size-3.5 shrink-0 items-center justify-center text-sky-500">
+      <svg viewBox="0 0 24 24" className="size-3" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 4 3 11l6 2 2 6 3-4 5 4z" /><path d="m9 13 12-9" /></svg>
+    </span>
+  );
+}
+
 export function RoleIcon({ role, className }: { role: { icon: string; kind: RoleKind }; className?: string }) {
   if (role.icon) return <span data-role-icon="" className={cn("inline-flex w-4 shrink-0 justify-center text-[13px] leading-none", className)} aria-hidden="true">{role.icon}</span>;
   return <span data-role-icon="" className="inline-flex shrink-0" aria-hidden="true"><Icon name={KIND_ICON[role.kind]} className={cn("size-4 shrink-0", className)} /></span>;
 }
 
-function RoleRow({ node, rows, onOpen, onEdit, dense }: {
+// ---------- per-record UI state, remembered ----------
+
+const EXPANDED_KEY = "agent-roster:expanded";
+function readExpanded(): Set<string> {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(EXPANDED_KEY) ?? "[]");
+    return new Set(Array.isArray(raw) ? raw.filter((x) => typeof x === "string").slice(0, 200) : []);
+  } catch {
+    return new Set();
+  }
+}
+let expanded = readExpanded();
+const expandedListeners = new Set<() => void>();
+function toggleExpanded(id: string) {
+  expanded = new Set(expanded);
+  if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+  try { window.localStorage.setItem(EXPANDED_KEY, JSON.stringify([...expanded])); } catch { /* private mode */ }
+  for (const fn of [...expandedListeners]) fn();
+}
+function useExpanded(id: string): boolean {
+  return useSyncExternalStore(
+    (fn) => { expandedListeners.add(fn); return () => expandedListeners.delete(fn); },
+    () => expanded.has(id),
+    () => false,
+  );
+}
+
+/** "What it is doing" lines, refetched only when a thread's status or update time changes. */
+function useActivity(roles: readonly ResolvedRole[], rows: ReadonlyMap<string, Row>): Record<string, string | null> {
+  const rpc = useRpc<typeof rpcContract>();
+  const ids = roles.flatMap((r) => (r.active.kind === "thread" ? [r.active.threadId] : []));
+  const key = ids.map((id) => `${id}:${rows.get(id)?.status ?? ""}:${rows.get(id)?.indicator ?? ""}`).join("|");
+  const [lines, setLines] = useState<Record<string, string | null>>({});
+  useEffect(() => {
+    if (ids.length === 0) return;
+    let live = true;
+    const timer = window.setTimeout(() => {
+      rpc.call("roster_activity", { threadIds: ids.slice(0, 50) }).then((r) => { if (live) setLines(r); }, () => undefined);
+    }, 400);
+    return () => { live = false; window.clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, rpc]);
+  return lines;
+}
+
+// ---------- a record ----------
+
+interface RowProps {
   node: TreeNode<ResolvedRole>;
-  rows: { rows: RowFacts[]; byId: Map<string, RowFacts> };
-  onOpen: (role: ResolvedRole) => void;
-  onEdit?: (role: ResolvedRole) => void;
+  rows: { rows: Row[]; byId: Map<string, Row> };
+  activity: string | null;
   dense: boolean;
-}) {
-  const { role, depth } = node;
-  const state = roleState(role.active, rows.byId);
-  const counts = role.active.kind === "thread" ? executorCounts(role.active.threadId, rows.rows) : { total: 0, errors: 0 };
+}
+
+function RecordMenu({ role, onClose, onWrite }: { role: ResolvedRole; onClose: () => void; onWrite: () => void }) {
+  const rpc = useRpc<typeof rpcContract>();
+  const open = useOpenRole();
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const away = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onClose(); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", esc); };
+  }, [onClose]);
+  const items: { id: string; label: string; run: () => void; danger?: boolean; disabled?: boolean }[] = [
+    { id: "open", label: "Открыть", run: () => open(role) },
+    { id: "write", label: "Написать…", run: onWrite, disabled: role.active.kind !== "thread" },
+    { id: "edit", label: "Изменить роль…", run: () => openDialog({ mode: "edit", roleId: role.id }) },
+    { id: "move", label: "Перевести на другой тред…", run: () => openDialog({ mode: "move", roleId: role.id }), disabled: role.kind === "external" },
+    { id: "remove", label: "Снять роль", danger: true, run: () => { void rpc.call("roster_remove", { id: role.id }).then(() => refresh(rpc)); } },
+  ];
+  return (
+    <div ref={ref} role="menu" data-agent-roster-menu="" className="absolute right-1 top-7 z-50 min-w-48 rounded-md border border-border bg-popover p-1 text-sm text-popover-foreground shadow-md">
+      {items.map((item) => (
+        <button key={item.id} type="button" role="menuitem" disabled={item.disabled}
+          className={cn("flex w-full items-center rounded-sm px-2 py-1.5 text-left hover:bg-accent disabled:opacity-40", item.danger && "text-red-500")}
+          onClick={() => { onClose(); item.run(); }}>
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function QuickMessage({ role, onDone }: { role: ResolvedRole; onDone: () => void }) {
+  const rpc = useRpc<typeof rpcContract>();
+  const [text, setText] = useState("");
+  const [state, setStateLocal] = useState<"idle" | "sending" | "error">("idle");
+  const [error, setError] = useState<string | null>(null);
+  const send = async () => {
+    const body = text.trim();
+    if (!body || state === "sending") return;
+    setStateLocal("sending");
+    try {
+      await rpc.call("roster_send", { roleId: role.id, text: body });
+      setText("");
+      onDone();
+    } catch (cause) {
+      setStateLocal("error");
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+  return (
+    <div data-agent-roster-compose="" className="mx-1 mb-1 rounded-md border border-border bg-background p-1">
+      <textarea
+        autoFocus
+        value={text}
+        rows={2}
+        placeholder={`Сообщение для «${role.name}» (Enter — отправить, Esc — закрыть)`}
+        aria-label={`Сообщение для ${role.name}`}
+        className="w-full resize-none bg-transparent px-1 text-sm outline-none"
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") onDone();
+          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(); }
+        }}
+      />
+      <div className="flex items-center gap-1">
+        <span className="flex-1 truncate text-[11px] text-red-500">{error}</span>
+        <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={onDone}>Отмена</Button>
+        <Button size="sm" className="h-6 px-2 text-xs" disabled={!text.trim() || state === "sending"} onClick={() => void send()}>Отправить</Button>
+      </div>
+    </div>
+  );
+}
+
+function Executors({ role, rows, dense, others }: { role: ResolvedRole; rows: { rows: Row[]; byId: Map<string, Row> }; dense: boolean; others: string[] }) {
+  const navigate = useBbNavigate();
+  const rpc = useRpc<typeof rpcContract>();
+  const [showFinished, setShowFinished] = useState(false);
+  const [archived, setArchived] = useState<Row[]>([]);
+  const rootId = role.active.kind === "thread" ? role.active.threadId : null;
+  useEffect(() => {
+    if (!showFinished || !rootId) { setArchived([]); return; }
+    let live = true;
+    rpc.call("roster_executors", { threadId: rootId }).then((r) => {
+      if (!live) return;
+      setArchived(r.threads.filter((t) => t.isArchived).map((t) => ({
+        id: t.id, parentThreadId: t.parentThreadId, status: t.status, indicator: "none",
+        hasPendingInteraction: false, isArchived: true, isHidden: false, title: t.title, projectId: null,
+      })));
+    }, () => undefined);
+    return () => { live = false; };
+  }, [showFinished, rootId, rpc]);
+  const all = useMemo(() => {
+    if (archived.length === 0) return rows.rows;
+    const known = new Set(rows.rows.map((r) => r.id));
+    return [...rows.rows, ...archived.filter((r) => !known.has(r.id))];
+  }, [rows.rows, archived]);
+  if (!rootId) return null;
+  const nodes = executorTree(rootId, all, showFinished);
+  const finished = executorTree(rootId, rows.rows, true).length - executorTree(rootId, rows.rows, false).length;
+  const byId = new Map(all.map((r) => [r.id, r]));
+  const groupLabel = (text: string) => (
+    <li className="pt-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/80" style={{ paddingLeft: dense ? 26 : 32 }}>{text}</li>
+  );
+  return (
+    <ul data-agent-roster-executors="" className="flex flex-col">
+      {groupLabel("Под управлением")}
+      {nodes.map((n) => (
+        <li key={n.row.id} data-executor={n.row.id} data-depth={n.depth} data-state={n.state} className="flex items-center">
+          <button type="button" title={`${(byId.get(n.row.id) as Row | undefined)?.title ?? n.row.id} — ${STATE_LABEL[n.state]}${n.row.isArchived ? " (архив)" : ""}`}
+            onClick={() => navigate.toThread(n.row.id)}
+            className={cn("flex min-w-0 flex-1 items-center gap-1.5 rounded-md text-left text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground", dense ? "h-6" : "h-8")}
+            style={{ paddingLeft: `${(dense ? 30 : 36) + (n.depth - 1) * 14}px`, paddingRight: 8 }}>
+            <span className={cn("min-w-0 flex-1 truncate", n.row.isArchived && "line-through opacity-70")}>{(byId.get(n.row.id) as Row | undefined)?.title ?? n.row.id}</span>
+            {n.hiddenBelow > 0 ? <span className="shrink-0 text-[11px]">ещё {n.hiddenBelow}</span> : null}
+            <StateMark state={n.state} />
+          </button>
+        </li>
+      ))}
+      {nodes.length === 0 && finished === 0 && !showFinished ? (
+        <li className="py-0.5 text-[12px] text-muted-foreground" style={{ paddingLeft: dense ? 30 : 36 }}>исполнителей нет</li>
+      ) : null}
+      <li>
+        <button type="button" data-agent-roster-show-finished="" className="py-0.5 text-[11px] text-muted-foreground underline-offset-2 hover:underline" style={{ paddingLeft: dense ? 30 : 36 }}
+          onClick={() => setShowFinished((v) => !v)}>
+          {showFinished ? "скрыть завершённые и архивные" : `показать завершённые и архивные${finished > 0 ? ` (${finished}+)` : ""}`}
+        </button>
+      </li>
+      {others.length > 0 ? (
+        <>
+          {groupLabel("Не под управлением")}
+          {others.map((id) => (
+            <li key={id} data-unmanaged={id} className="flex items-center">
+              <button type="button" title={`${rows.byId.get(id)?.title ?? id} — работает, не под управлением роли`} onClick={() => navigate.toThread(id)}
+                className={cn("flex min-w-0 flex-1 items-center gap-1.5 rounded-md text-left text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground", dense ? "h-6" : "h-8")}
+                style={{ paddingLeft: dense ? 30 : 36, paddingRight: 8 }}>
+                <span className="min-w-0 flex-1 truncate">{rows.byId.get(id)?.title ?? id}</span>
+                <StateMark state="running" />
+              </button>
+            </li>
+          ))}
+        </>
+      ) : null}
+    </ul>
+  );
+}
+
+function RoleRow({ node, rows, activity, dense }: RowProps) {
+  const { role } = node;
+  const open = useOpenRole();
+  const navigate = useBbNavigate();
+  const isOpen = useExpanded(role.id);
+  const [menu, setMenu] = useState(false);
+  const [writing, setWriting] = useState(false);
+  const allRoles = useRoles() ?? [];
+  const summary = summarize(role.active, rows.rows, rows.byId);
+  const work = projectWork(role, role.active, rows.rows, allRoles);
+  const workLabel = `в проекте работают: под управлением ${work.own.length}, не под управлением ${work.others.length}`;
+  const anyWork = work.own.length + work.others.length > 0;
+  // Work in the project shows as a spinner even while the role itself waits ("ждёт тебя" stays as a pill).
+  const quietWithWork = anyWork && (summary.state === "idle" || summary.state === "waiting");
+  const label = quietWithWork ? `${summaryLabel(summary)}; ${workLabel}` : summaryLabel(summary);
   const title = [
     `${role.name} — ${KIND_LABEL[role.kind]}`,
     role.responsibility,
-    `Состояние: ${STATE_LABEL[state]}`,
-    counts.total ? `Исполнителей: ${counts.total}${counts.errors ? `, с ошибкой: ${counts.errors}` : ""}` : "",
+    `Подчиняется: ${role.parentName ?? "владельцу"}`,
+    `Состояние: ${label}`,
+    summary.total ? `Исполнителей: ${summary.total}${summary.errors ? `, с ошибкой: ${summary.errors}` : ""}` : "",
   ].filter(Boolean).join("\n");
+  const pad = dense ? 4 : 8;
   return (
-    <li data-agent-roster-role={role.id} data-state={state} className="group/role flex items-center">
-      <button
-        type="button"
-        title={title}
-        onClick={() => onOpen(role)}
-        className={cn(
-          "flex min-w-0 flex-1 items-center gap-1.5 rounded-md text-left text-sm hover:bg-sidebar-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring",
-          dense ? "h-7 px-2" : "h-9 px-3",
-        )}
-        style={{ paddingLeft: `${(dense ? 8 : 12) + depth * 14}px` }}
-      >
-        <RoleIcon role={role} />
-        <span className="min-w-0 flex-1 truncate">{role.name}</span>
-        {counts.total > 0 ? (
-          <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground" aria-label={`исполнителей ${counts.total}`}>
-            ↳{counts.total}
-            {counts.errors > 0 ? <span className="ml-1 text-red-500" aria-label={`с ошибкой ${counts.errors}`}>⊗{counts.errors}</span> : null}
+    <li data-agent-roster-role={role.id} data-state={summary.state} className="relative">
+      <div className="group/role flex items-center">
+        <button type="button" aria-label={isOpen ? `Свернуть ${role.name}` : `Раскрыть ${role.name}`} aria-expanded={isOpen}
+          data-agent-roster-toggle=""
+          className={cn("flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-sidebar-foreground", role.active.kind !== "thread" && "invisible")}
+          style={{ marginLeft: pad }}
+          onClick={() => toggleExpanded(role.id)}>
+          <svg viewBox="0 0 24 24" className={cn("size-3 transition-transform", isOpen && "rotate-90")} fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+        </button>
+        <button type="button" title={title} onClick={() => open(role)}
+          className={cn("flex min-w-0 flex-1 flex-col justify-center rounded-md pl-1 pr-1 text-left hover:bg-sidebar-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring", dense ? "min-h-7 py-0.5" : "min-h-9 py-1")}>
+          <span className="flex w-full min-w-0 items-center gap-1.5 text-sm">
+            <RoleIcon role={role} />
+            <span className="min-w-0 flex-1 truncate">{role.name}</span>
+            {summary.total > 0 ? (
+              <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground" aria-label={`исполнителей ${summary.total}`}>
+                ↳{summary.total}
+                {summary.errors > 0 ? <span className="ml-1 text-red-500" aria-label={`с ошибкой ${summary.errors}`}>⊗{summary.errors}</span> : null}
+              </span>
+            ) : null}
+            {work.own.length + work.others.length > 0 ? (
+              <span data-agent-roster-work="" title={workLabel} aria-label={workLabel} className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                {work.own.length} · {work.others.length}
+              </span>
+            ) : null}
+            {(role.channels ?? []).map((c) => <ChannelMark key={c.kind} label={c.label} />)}
+            <StateMark state={quietWithWork ? "executors" : summary.state} label={label} />
+            {!dense ? <span className="hidden w-40 shrink-0 truncate text-xs text-muted-foreground sm:inline">{label}</span> : null}
           </span>
+          {!dense ? <span data-agent-roster-parent="" className="block w-full truncate pl-[22px] text-[11px] text-muted-foreground">{KIND_LABEL[role.kind]} · подчиняется: {role.parentName ?? "владельцу"}</span> : null}
+          {activity ? <span data-agent-roster-activity="" className="block w-full truncate pl-[22px] text-[11px] text-muted-foreground">{activity}</span> : null}
+        </button>
+        {summary.waitingThreadId ? (
+          <button type="button" data-agent-roster-waiting="" title="Открыть тред, который ждёт твоего ответа"
+            className="mr-0.5 shrink-0 rounded-full bg-amber-500/15 px-1.5 text-[11px] font-medium text-amber-600 hover:bg-amber-500/25"
+            onClick={() => navigate.toThread(summary.waitingThreadId!)}>
+            ждёт тебя
+          </button>
         ) : null}
-        <StateMark state={state} />
-        {!dense ? <span className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground sm:inline">{STATE_LABEL[state]}</span> : null}
-      </button>
-      {onEdit ? (
-        <Button variant="ghost" size="icon" className="size-8 shrink-0 text-muted-foreground" aria-label={`Настроить ${role.name}`} onClick={() => onEdit(role)}>
-          <Icon name="agent-roster/edit" className="size-4" />
-        </Button>
-      ) : null}
+        <button type="button" aria-label={`Действия: ${role.name}`} aria-haspopup="menu" data-agent-roster-menu-button=""
+          className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-60 hover:bg-sidebar-accent hover:opacity-100 focus-visible:opacity-100"
+          onClick={() => setMenu((v) => !v)}>
+          <svg viewBox="0 0 24 24" className="size-3.5" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
+        </button>
+      </div>
+      {menu ? <RecordMenu role={role} onClose={() => setMenu(false)} onWrite={() => setWriting(true)} /> : null}
+      {writing ? <QuickMessage role={role} onDone={() => setWriting(false)} /> : null}
+      {isOpen ? <Executors role={role} rows={rows} dense={dense} others={work.others} /> : null}
     </li>
   );
 }
@@ -178,17 +427,18 @@ function useOpenRole() {
   }, [navigate]);
 }
 
-function RosterTree({ dense, editable }: { dense: boolean; editable: boolean }) {
+function RosterTree({ dense }: { dense: boolean; editable?: boolean }) {
   const roles = useRoles();
   const rows = useRows();
-  const open = useOpenRole();
-  const flat = useMemo(() => flattenTree(buildTree(roles ?? [])), [roles]);
+  // Roles stand side by side; only a record's executors nest under it.
+  const flat = useMemo(() => flattenTree(buildTree((roles ?? []).map((r) => ({ ...r, parentId: null })))), [roles]);
+  const activity = useActivity(roles ?? [], rows.byId);
   if (roles === null) return null;
   return (
-    <ul className="flex flex-col" role="tree" aria-label={MODULE_NAME}>
+    <ul className="flex flex-col" aria-label={MODULE_NAME}>
       {flat.map((node) => (
-        <RoleRow key={node.role.id} node={node} rows={rows} onOpen={open} dense={dense}
-          onEdit={editable ? (role) => openDialog({ mode: "edit", roleId: role.id }) : undefined} />
+        <RoleRow key={node.role.id} node={node} rows={rows} dense={dense}
+          activity={node.role.active.kind === "thread" ? activity[node.role.active.threadId] ?? null : null} />
       ))}
     </ul>
   );
@@ -276,6 +526,7 @@ function draftFor(request: DialogRequest, roles: ResolvedRole[]): Draft | null {
       bindMode: "pinned", threadId: request.threadId ?? "", threadIds: "", bridgeTopicId: "", url: "",
     };
   }
+  if (request.mode === "move") return null;
   const role = roles.find((r) => r.id === request.roleId);
   if (!role) return null;
   const b = role.binding;
@@ -403,12 +654,17 @@ export function RoleDialog() {
                 </select>
               </Field>
             </div>
-            <Field label="Кому подчиняется">
-              <select className={selectClass} value={draft.parentId} onChange={(e) => patch({ parentId: e.target.value })}>
-                <option value="">владельцу</option>
-                {parents.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-              </select>
-            </Field>
+            <details data-agent-roster-more="" open={draft.parentId !== "" ? true : undefined} className="text-sm">
+              <summary className="cursor-pointer select-none text-xs text-muted-foreground">Дополнительно</summary>
+              <div className="mt-2">
+                <Field label="Кому подчиняется (по умолчанию — владельцу)">
+                  <select className={selectClass} value={draft.parentId} onChange={(e) => patch({ parentId: e.target.value })}>
+                    <option value="">владельцу</option>
+                    {parents.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                  </select>
+                </Field>
+              </div>
+            </details>
             {draft.kind === "external" ? (
               <Field label="Ссылка на сотрудника в другом BB">
                 <Input type="url" required value={draft.url} placeholder="https://…" onChange={(e) => patch({ url: e.target.value })} />
@@ -459,6 +715,58 @@ export function RoleDialog() {
   );
 }
 
+/** Moves a role to another thread: pick a live thread or paste an id. */
+export function MoveDialog() {
+  const rpc = useRpc<typeof rpcContract>();
+  const request = useStore((s) => s.dialog);
+  const roles = useRoles();
+  const rows = useRows();
+  const role = request?.mode === "move" ? roles?.find((r) => r.id === request.roleId) ?? null : null;
+  const [threadId, setThreadId] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { setThreadId(""); setError(null); }, [request]);
+  const current = role?.active.kind === "thread" ? role.active.threadId : null;
+  const choices = rows.rows.filter((r) => !r.isArchived && !r.isHidden && r.id !== current).slice(0, 200);
+  const close = () => setState({ dialog: null });
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!role || !threadId.trim()) return;
+    try {
+      await rpc.call("roster_set_thread", { id: role.id, threadId: threadId.trim(), replace: current && role.binding.mode === "group" ? current : null });
+      await refresh(rpc);
+      close();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+  return (
+    <Dialog open={role !== null} onOpenChange={(o) => { if (!o) close(); }}>
+      <DialogContent className="sm:max-w-md" data-agent-roster-move="">
+        <DialogHeader>
+          <DialogTitle>Перевести на другой тред</DialogTitle>
+          <DialogDescription>{role ? `Роль «${role.name}» перейдёт на выбранный тред; старый тред останется как есть.` : ""}</DialogDescription>
+        </DialogHeader>
+        <form className="flex flex-col gap-3" onSubmit={save}>
+          <Field label="Тред">
+            <select className={selectClass} value={threadId} onChange={(e) => setThreadId(e.target.value)}>
+              <option value="">— выбрать —</option>
+              {choices.map((r) => <option key={r.id} value={r.id}>{r.title}</option>)}
+            </select>
+          </Field>
+          <Field label="или идентификатор треда">
+            <Input value={threadId} placeholder="thr_…" onChange={(e) => setThreadId(e.target.value)} />
+          </Field>
+          {error ? <p role="alert" className="text-sm text-red-500">{error}</p> : null}
+          <DialogFooter className="gap-2">
+            <Button type="button" variant="ghost" onClick={close}>Отмена</Button>
+            <Button type="submit" disabled={!threadId.trim()}>Перевести</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ---------- app-wide owner ----------
 
 /** Mounted once per window: keeps data fresh, draws the block into its spot, owns the dialog. */
@@ -469,6 +777,7 @@ export function RosterOverlay() {
     <>
       {host ? createPortal(<SidebarBlock />, host) : null}
       <RoleDialog />
+      <MoveDialog />
     </>
   );
 }
@@ -478,7 +787,7 @@ function useBadge() {
   const roles = useRoles();
   const rows = useRows();
   if (!roles) return null;
-  const waiting = roles.filter((r) => roleState(r.active, rows.byId) === "waiting").length;
+  const waiting = roles.filter((r) => summarize(r.active, rows.rows, rows.byId).state === "waiting").length;
   return waiting > 0 ? { count: waiting, tone: "warning" as const, label: `ждут владельца: ${waiting}` } : null;
 }
 
@@ -488,38 +797,15 @@ function useActionData() {
   return { rpc, roles: roles ?? [] };
 }
 
-/** Row status for bb's own list: drawn by default, never hides running, error or waiting. */
-function mountRowStatus(setRowStatus: ((threadId: string, status: { icon: string; label: string } | null) => void) | undefined) {
-  if (!setRowStatus) return () => undefined;
-  let marked = new Set<string>();
-  const paint = () => {
-    const roles = getState().roles ?? [];
-    const next = new Map<string, { icon: string; label: string }>();
-    for (const role of roles) {
-      const threads = role.binding.mode === "pinned" ? (role.binding.threadId ? [role.binding.threadId] : []) : role.binding.mode === "group" ? role.binding.threadIds : [];
-      for (const id of threads) if (!next.has(id)) next.set(id, { icon: KIND_ICON[role.kind], label: `${KIND_LABEL[role.kind]}: ${role.name}` });
-    }
-    for (const id of marked) if (!next.has(id)) setRowStatus(id, null);
-    for (const [id, status] of next) setRowStatus(id, status);
-    marked = new Set(next.keys());
-  };
-  const unsubscribe = subscribe(paint);
-  paint();
-  return () => {
-    unsubscribe();
-    for (const id of marked) setRowStatus(id, null);
-  };
-}
-
 export default definePluginApp((app) => {
   app.contentScripts.register({
     id: "sidebar-block",
-    mount({ signal, experimental_setThreadRowStatus }) {
+    mount({ signal }) {
       const host = document.createElement("div");
       host.setAttribute(HOST_ATTR, "");
       host.dataset.bbPlugin = "agent-roster";
       const stopPlacing = keepPlaced(host, signal, (placed) => setState({ host: placed ? host : null }));
-      const stopMarks = mountRowStatus(experimental_setThreadRowStatus);
+      const stopMarks = mountRowMarks(() => getState().roles, subscribe);
       return () => {
         stopMarks();
         stopPlacing();

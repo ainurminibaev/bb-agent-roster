@@ -315,10 +315,11 @@ export function findRole<R extends Role>(roles: readonly R[], ref: string): R | 
 
 // ---------- Status of a role, from bb's thread rows (frontend) ----------
 
-export type RoleState = "running" | "waiting" | "error" | "idle" | "none" | "external";
+export type RoleState = "running" | "executors" | "waiting" | "error" | "idle" | "none" | "external";
 
 export const STATE_LABEL: Record<RoleState, string> = {
   running: "работает",
+  executors: "работают исполнители",
   waiting: "ждёт владельца",
   error: "ошибка",
   idle: "простаивает",
@@ -381,6 +382,8 @@ export function executorCounts(threadId: string, rows: readonly RowFacts[]): { t
 export interface ResolvedRole extends Role {
   active: ActiveTarget;
   parentName: string | null;
+  /** Channels the record is reachable by (0.2); absent in older data. */
+  channels?: { kind: "telegram"; label: string }[];
 }
 
 function quote(value: string): string {
@@ -426,4 +429,249 @@ export function instructionsFor(own: readonly ResolvedRole[]): string {
     );
   }
   return lines.join("\n");
+}
+
+// ---------- 0.2: a record's summary and its executors ----------
+
+export interface RoleSummary {
+  state: RoleState;
+  /** Running executors under the active thread. */
+  running: number;
+  total: number;
+  errors: number;
+  /** The thread waiting for the owner: the active one or an executor; null if none. */
+  waitingThreadId: string | null;
+}
+
+function childrenIndex(rows: readonly RowFacts[]): Map<string, RowFacts[]> {
+  const children = new Map<string, RowFacts[]>();
+  for (const row of rows) {
+    if (!row.parentThreadId) continue;
+    const list = children.get(row.parentThreadId) ?? [];
+    list.push(row);
+    children.set(row.parentThreadId, list);
+  }
+  return children;
+}
+
+/**
+ * State of a record, counting its executors: the thread itself first; if it is
+ * idle while executors work, "executors working: N"; a waiting executor makes
+ * the record wait, and `waitingThreadId` names the thread to open.
+ */
+export function summarize(target: ActiveTarget, rows: readonly RowFacts[], byId?: ReadonlyMap<string, RowFacts>): RoleSummary {
+  if (target.kind !== "thread") return { state: target.kind === "external" ? "external" : "none", running: 0, total: 0, errors: 0, waitingThreadId: null };
+  const map = byId ?? new Map(rows.map((r) => [r.id, r]));
+  const own = rowState(map.get(target.threadId));
+  const children = childrenIndex(rows);
+  let total = 0, errors = 0, running = 0;
+  let waitingThreadId: string | null = own === "waiting" ? target.threadId : null;
+  const seen = new Set<string>([target.threadId]);
+  const stack = [...(children.get(target.threadId) ?? [])];
+  while (stack.length) {
+    const row = stack.pop()!;
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    stack.push(...(children.get(row.id) ?? []));
+    if (row.isArchived) continue;
+    total += 1;
+    const st = rowState(row);
+    if (st === "error") errors += 1;
+    if (st === "running") running += 1;
+    if (st === "waiting" && !waitingThreadId) waitingThreadId = row.id;
+  }
+  let state: RoleState = own;
+  if (own !== "waiting" && own !== "error" && own !== "running") {
+    if (waitingThreadId) state = "waiting";
+    else if (running > 0) state = "executors";
+  }
+  return { state, running, total, errors, waitingThreadId };
+}
+
+export function summaryLabel(summary: RoleSummary): string {
+  if (summary.state === "executors") return `работают исполнители: ${summary.running}`;
+  return STATE_LABEL[summary.state];
+}
+
+export interface ExecutorNode {
+  row: RowFacts;
+  depth: 1 | 2;
+  state: RoleState;
+  /** Descendants below depth 2, not drawn ("ещё N"). */
+  hiddenBelow: number;
+}
+
+/** "Finished" executors: not working, not waiting, not failed. Hidden unless asked. */
+export function isFinished(row: RowFacts): boolean {
+  return row.isArchived || rowState(row) === "idle";
+}
+
+/**
+ * Executors of a thread two levels deep. Finished and archived ones are
+ * dropped unless `showFinished`; a finished parent with live children stays.
+ */
+export function executorTree(rootId: string, rows: readonly RowFacts[], showFinished: boolean): ExecutorNode[] {
+  const children = childrenIndex(rows);
+  const countBelow = (id: string): number => {
+    let n = 0;
+    const stack = [...(children.get(id) ?? [])];
+    const seen = new Set<string>();
+    while (stack.length) {
+      const r = stack.pop()!;
+      if (seen.has(r.id)) continue;
+      seen.add(r.id);
+      if (showFinished || !isFinished(r)) n += 1;
+      stack.push(...(children.get(r.id) ?? []));
+    }
+    return n;
+  };
+  const keep = (r: RowFacts) => !r.isHidden && (showFinished || !isFinished(r));
+  const out: ExecutorNode[] = [];
+  for (const child of children.get(rootId) ?? []) {
+    if (child.isHidden) continue;
+    const grand = (children.get(child.id) ?? []).filter(keep);
+    if (!keep(child) && grand.length === 0) continue;
+    out.push({ row: child, depth: 1, state: rowState(child), hiddenBelow: 0 });
+    for (const g of grand) out.push({ row: g, depth: 2, state: rowState(g), hiddenBelow: countBelow(g.id) });
+  }
+  return out;
+}
+
+/** One line: what the thread is doing or what it finished with. */
+export function activityLine(running: boolean, lastUser: string | null, lastAssistant: string | null, max = 140): string | null {
+  const pick = running ? lastUser : lastAssistant ?? lastUser;
+  if (!pick) return null;
+  const text = pick.replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  const short = text.length > max ? `${text.slice(0, max - 1)}…` : text;
+  return `${running ? "Занят: " : "Закончил: "}${short}`;
+}
+
+// ---------- 0.2: channels of a record (read-only, from a bridge plugin) ----------
+
+export type ChannelKind = "telegram";
+export interface Channel {
+  kind: ChannelKind;
+  /** Tooltip text: which chat or topic. */
+  label: string;
+}
+
+export interface ChatBinding {
+  topicId: number;
+  threadId: string | null;
+}
+
+/** Reads a bridge status of any shape; unknown or broken → no bindings. */
+export function parseBridgeStatus(value: unknown): { bot: string | null; bindings: ChatBinding[] } {
+  if (!value || typeof value !== "object") return { bot: null, bindings: [] };
+  const v = value as Record<string, unknown>;
+  const list = Array.isArray(v.chatBindings) ? v.chatBindings : [];
+  const bindings: ChatBinding[] = [];
+  for (const item of list.slice(0, 500)) {
+    if (!item || typeof item !== "object") continue;
+    const b = item as Record<string, unknown>;
+    if (typeof b.topicId !== "number" || !Number.isInteger(b.topicId) || b.topicId < 0) continue;
+    bindings.push({ topicId: b.topicId, threadId: isThreadId(b.threadId) ? b.threadId : null });
+  }
+  const bot = typeof v.bot === "string" && /^[A-Za-z0-9_]{1,64}$/.test(v.bot) ? v.bot : null;
+  return { bot, bindings };
+}
+
+/** A record is on Telegram when one of its threads is bound to a chat, or its pair topic is. */
+export function channelsFor(role: Role, active: ActiveTarget, bridge: { bot: string | null; bindings: ChatBinding[] }): Channel[] {
+  const threads = new Set(threadIdsOf(role));
+  if (active.kind === "thread") threads.add(active.threadId);
+  const topic = role.binding.mode === "group" ? role.binding.bridgeTopicId : null;
+  const hit = bridge.bindings.find((b) => (b.threadId !== null && threads.has(b.threadId)) || (topic !== null && b.topicId === topic));
+  if (!hit) return [];
+  const where = hit.topicId === 0 ? "личный чат с ботом" : `тема ${hit.topicId}`;
+  return [{ kind: "telegram", label: `Telegram: ${where}${bridge.bot ? ` @${bridge.bot}` : ""}` }];
+}
+
+// ---------- 0.2: work in the role's project ----------
+
+export interface ProjectWork {
+  /** Running threads under the role's active thread, any depth. */
+  own: string[];
+  /** Other running threads of the same project, not under any role. */
+  others: string[];
+}
+
+/**
+ * Splits the running work of the role's project: "managed" — the role's
+ * subthreads at any depth; "not managed" — other running threads of the same
+ * project that are neither this role's nor any other role's (nor under them).
+ */
+export function projectWork(
+  role: Role,
+  active: ActiveTarget,
+  rows: readonly (RowFacts & { projectId?: string | null })[],
+  allRoles: readonly Role[],
+): ProjectWork {
+  if (active.kind !== "thread") return { own: [], others: [] };
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const projectId = role.projectId ?? byId.get(active.threadId)?.projectId ?? null;
+  const children = childrenIndex(rows);
+  const under = (rootIds: Iterable<string>): Set<string> => {
+    const seen = new Set<string>();
+    const stack = [...rootIds];
+    while (stack.length) {
+      const id = stack.pop()!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      for (const c of children.get(id) ?? []) stack.push(c.id);
+    }
+    return seen;
+  };
+  const mine = under([active.threadId]);
+  const otherRoles = under(allRoles.filter((r) => r.id !== role.id).flatMap(threadIdsOf));
+  const running = (r: RowFacts) => !r.isArchived && rowState(r) === "running";
+  const own = [...mine].filter((id) => id !== active.threadId && byId.get(id) && running(byId.get(id)!));
+  const others = projectId === null ? [] : rows
+    .filter((r) => r.projectId === projectId && running(r) && !mine.has(r.id) && !otherRoles.has(r.id))
+    .map((r) => r.id);
+  return { own, others };
+}
+
+// ---------- stable list format (a contract: add fields, never rename or remove) ----------
+
+export const LIST_FORMAT_VERSION = 1;
+
+export interface ListedRole {
+  id: string;
+  name: string;
+  kind: RoleKind;
+  responsibility: string;
+  /** Role id it reports to; null = the owner. */
+  reportsTo: string | null;
+  reportsToName: string | null;
+  projectId: string | null;
+  /** The active thread to write to with `bb thread tell`; null when there is none here. */
+  activeThreadId: string | null;
+  /** For an external employee: the link; otherwise null. */
+  url: string | null;
+}
+
+export interface ListedRoster {
+  formatVersion: number;
+  roles: ListedRole[];
+}
+
+/** The machine-readable list of `bb agent-roster list --json` and the agent tool. */
+export function listJson(roles: readonly ResolvedRole[]): ListedRoster {
+  const ordered = flattenTree(buildTree(roles)).map((n) => n.role);
+  return {
+    formatVersion: LIST_FORMAT_VERSION,
+    roles: ordered.map((r) => ({
+      id: r.id,
+      name: r.name,
+      kind: r.kind,
+      responsibility: r.responsibility,
+      reportsTo: r.parentId,
+      reportsToName: r.parentName,
+      projectId: r.projectId,
+      activeThreadId: r.active.kind === "thread" ? r.active.threadId : null,
+      url: r.active.kind === "external" ? r.active.url : r.binding.mode === "external" ? r.binding.url || null : null,
+    })),
+  };
 }

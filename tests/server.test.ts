@@ -46,7 +46,7 @@ describe("server", () => {
     r = await cli(h, ["set-thread", "site", "thr_c"]);
     expect(r.exitCode).toBe(0);
     const json = JSON.parse((await cli(h, ["list", "--json"])).stdout);
-    expect(json.roles.find((x: { id: string }) => x.id === "site").active).toMatchObject({ threadId: "thr_c" });
+    expect(json.roles.find((x: { id: string }) => x.id === "site").activeThreadId).toBe("thr_c");
 
     r = await cli(h, ["remove", "site"]);
     expect(r.stdout).toContain("untouched");
@@ -117,5 +117,45 @@ describe("server", () => {
     await h.harness.lifecycle.reload(plugin);
     const out = await h.harness.behavior.callRpc("roster_list", null) as { roles: { name: string }[] };
     expect(out.roles.map((r) => r.name)).toEqual(["Keep"]);
+  });
+});
+
+describe("server 0.2", () => {
+  it("sends a quick message to the role's active thread with the standard send", async () => {
+    const sends: unknown[] = [];
+    const h = await setup({ thr_a: {} });
+    h.harness.sdk.stub("threads.send", async (args: unknown) => { sends.push(args); return {} as never; });
+    await cli(h, ["add", "--name", "Site", "--kind", "orchestrator", "--thread", "thr_a"]);
+    const out = await h.harness.behavior.callRpc("roster_send", { roleId: "site", text: "hi" });
+    expect(out).toEqual({ threadId: "thr_a" });
+    expect(sends).toEqual([{ threadId: "thr_a", mode: "auto", input: [{ type: "text", text: "hi" }] }]);
+    await expect(h.harness.behavior.callRpc("roster_send", { roleId: "nope", text: "hi" })).rejects.toThrow();
+  });
+  it("activity reads the last task while running and the last answer when idle", async () => {
+    const h = await setup({ thr_a: {} });
+    h.harness.sdk.stub("threads.conversationOutline", async () => ({ items: [{ role: "user", preview: "build it" }, { role: "assistant", preview: "built" }] }) as never);
+    const out = await h.harness.behavior.callRpc("roster_activity", { threadIds: ["thr_a", "thr_missing"] });
+    expect(out).toEqual({ thr_a: "Закончил: built", thr_missing: null });
+  });
+});
+
+describe("list format contract (formatVersion 1)", () => {
+  it("CLI --json and the agent tool return the same stable fields; add, never rename or remove", async () => {
+    const h = await setup({ thr_a: {}, thr_b: { archivedAt: 1 } });
+    await cli(h, ["add", "--name", "Lead", "--kind", "agent", "--about", "lead work", "--thread", "thr_a", "--project", "proj_1"]);
+    await cli(h, ["add", "--name", "Gone", "--kind", "orchestrator", "--parent", "Lead", "--thread", "thr_b"]);
+    await cli(h, ["add", "--name", "Ext", "--kind", "external", "--url", "https://example.org/ext"]);
+    const fromCli = JSON.parse((await cli(h, ["list", "--json"])).stdout);
+    const tool = await h.harness.behavior.callAgentTool("agent_roster_list", {});
+    const toolText = typeof tool === "string" ? tool : (tool as { content: { text: string }[] }).content[0]!.text;
+    const fromTool = JSON.parse(toolText);
+    expect(fromTool).toEqual(fromCli);
+    expect(fromCli.formatVersion).toBe(1);
+    const REQUIRED = ["id", "name", "kind", "responsibility", "reportsTo", "reportsToName", "projectId", "activeThreadId", "url"];
+    for (const role of fromCli.roles) for (const key of REQUIRED) expect(role).toHaveProperty(key);
+    const byName = Object.fromEntries(fromCli.roles.map((r: { name: string }) => [r.name, r]));
+    expect(byName.Lead).toMatchObject({ id: "lead", kind: "agent", responsibility: "lead work", reportsTo: null, projectId: "proj_1", activeThreadId: "thr_a", url: null });
+    expect(byName.Gone).toMatchObject({ reportsTo: "lead", reportsToName: "Lead", activeThreadId: null });
+    expect(byName.Ext).toMatchObject({ kind: "external", activeThreadId: null, url: "https://example.org/ext" });
   });
 });

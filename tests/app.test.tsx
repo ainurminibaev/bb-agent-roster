@@ -114,15 +114,19 @@ describe("sidebar placement", () => {
     await scripts.lifecycle.dispose();
   });
 
-  it("marks role threads in bb's list and clears the marks on removal and disable", async () => {
+  it("marks role threads with one stylesheet mark before the title, never the row state", async () => {
     standardSidebar();
     const scripts = await mountPluginContentScripts(app, { pluginId: "agent-roster" });
     act(() => setState({ roles: ROLES }));
-    expect(scripts.inspection.getThreadRowStatus("thr_site")).toMatchObject({ icon: "agent-roster/crown", label: "оркестратор: Site" });
+    const css = () => document.querySelector("style[data-agent-roster-marks]")?.textContent ?? "";
+    expect(css()).toContain('a[data-sidebar-thread-id="thr_site"]');
+    expect(css()).toContain(".bb-thread-title::before");
+    expect(css().match(/thr_site/g)).toHaveLength(1);
+    expect(scripts.inspection.threadRowStatusCalls).toHaveLength(0);
     act(() => setState({ roles: [ROLES[0]] }));
-    expect(scripts.inspection.getThreadRowStatus("thr_site")).toBeNull();
+    expect(css()).not.toContain("thr_site");
     await scripts.lifecycle.dispose();
-    expect(scripts.inspection.getThreadRowStatus("thr_lead")).toBeNull();
+    expect(document.querySelector("style[data-agent-roster-marks]")).toBeNull();
   });
 });
 
@@ -159,7 +163,7 @@ describe("block, page, dialog", () => {
       expect(li.querySelectorAll("[data-state-mark]")).toHaveLength(1);
       expect(li.querySelectorAll("[data-state-mark] svg, [data-state-mark] img")).toHaveLength(0);
     }
-    (site.querySelector("button") as HTMLButtonElement).click();
+    (site.querySelector("button[title]") as HTMLButtonElement).click();
     expect(JSON.stringify(slot.inspection.navigateCalls)).toContain("thr_site");
     expect(host.innerHTML).toMatchSnapshot();
     slot.lifecycle.unmount();
@@ -172,7 +176,7 @@ describe("block, page, dialog", () => {
       sidebarThreads: { threads: THREADS as never },
     });
     await page.findByText("Site");
-    expect(page.getAllByLabelText(/Настроить/)).toHaveLength(2);
+    expect(page.getAllByLabelText(/Действия:/)).toHaveLength(2);
     page.lifecycle.unmount();
   });
 
@@ -205,9 +209,101 @@ describe("block, page, dialog", () => {
     expect(dialog.textContent).toContain("Кому подчиняется");
     fireEvent.change(dialog.querySelector("input")!, { target: { value: "Orchestrator" } });
     fireEvent.submit(dialog.querySelector("form")!);
+    await new Promise((r) => setTimeout(r, 300));
     await waitFor(() => expect(saved).toHaveLength(1));
     expect(saved[0]).toMatchObject({ name: "Orchestrator", kind: "orchestrator", projectId: "p1", binding: { mode: "pinned", threadId: "thr_new" } });
     expect(saved[0]).not.toHaveProperty("id");
     slot.lifecycle.unmount();
+  });
+});
+
+describe("0.2: working with an agent from the block", () => {
+  it("expands executors two levels, marks «ждёт тебя», sends a quick message, offers the record menu", async () => {
+    machineTabsSidebar();
+    const scripts = await mountPluginContentScripts(app, { pluginId: "agent-roster" });
+    await frame();
+    const sent: unknown[] = [];
+    const threads = [
+      { ...row("thr_lead", null), title: "lead" },
+      { ...row("thr_site", null), title: "site" },
+      { ...row("thr_x1", "thr_site", { status: "active", indicator: "runtime" }), title: "worker one" },
+      { ...row("thr_x11", "thr_x1", { hasPendingInteraction: true, indicator: "waiting-for-input" }), title: "asks a question" },
+    ];
+    const slot = renderSlot(app.appOverlays[0]!, {}, {
+      experimental_rpcContract: rpcContract,
+      rpc: {
+        roster_list: () => ({ roles: ROLES, launchDocUrl: null }),
+        roster_activity: () => ({ thr_site: "Закончил: отчёт", thr_lead: null }),
+        roster_send: (input: unknown) => { sent.push(input); return { threadId: "thr_site" }; },
+        roster_executors: () => ({ threads: [] }),
+      } as never,
+      sidebarThreads: { threads: threads as never },
+    });
+    const host = document.querySelector(`[${HOST_ATTR}]`)!;
+    await waitFor(() => expect(host.querySelector('[data-agent-roster-role="site"]')).not.toBeNull());
+    const site = host.querySelector('[data-agent-roster-role="site"]')!;
+    // roles stand side by side: no indent for the subordinate role
+    expect(site.querySelector("[data-agent-roster-toggle]")!.getAttribute("style")).toBe(host.querySelector('[data-agent-roster-role="lead"] [data-agent-roster-toggle]')!.getAttribute("style"));
+    await waitFor(() => expect(site.querySelector("[data-agent-roster-activity]")?.textContent).toBe("Закончил: отчёт"));
+    // waiting executor → pill → opens that very thread
+    const pill = site.querySelector("[data-agent-roster-waiting]") as HTMLButtonElement;
+    expect(pill.textContent).toContain("ждёт тебя");
+    pill.click();
+    expect(JSON.stringify(slot.inspection.navigateCalls)).toContain("thr_x11");
+    // expand: two levels
+    act(() => (site.querySelector("[data-agent-roster-toggle]") as HTMLButtonElement).click());
+    const ex = Array.from(site.querySelectorAll("[data-executor]")).map((e) => [e.getAttribute("data-executor"), e.getAttribute("data-depth"), e.getAttribute("data-state")]);
+    expect(ex).toEqual([["thr_x1", "1", "running"], ["thr_x11", "2", "waiting"]]);
+    // record menu
+    act(() => (site.querySelector("[data-agent-roster-menu-button]") as HTMLButtonElement).click());
+    const items = Array.from(site.querySelectorAll("[role=menuitem]")).map((e) => e.textContent);
+    expect(items).toEqual(["Открыть", "Написать…", "Изменить роль…", "Перевести на другой тред…", "Снять роль"]);
+    act(() => (site.querySelectorAll("[role=menuitem]")[1] as HTMLButtonElement).click());
+    const box = site.querySelector("[data-agent-roster-compose] textarea") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "статус?" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(sent).toEqual([{ roleId: "site", text: "статус?" }]));
+    slot.lifecycle.unmount();
+    await scripts.lifecycle.dispose();
+    window.localStorage.clear();
+  });
+});
+
+describe("0.2: channels and project work in the row", () => {
+  it("shows a Telegram mark only when the bridge reports a channel, and «own · others» of the project", async () => {
+    machineTabsSidebar();
+    const scripts = await mountPluginContentScripts(app, { pluginId: "agent-roster" });
+    await frame();
+    const roles = [
+      { ...ROLES[0], channels: [{ kind: "telegram", label: "Telegram: личный чат с ботом" }] },
+      { ...ROLES[1], projectId: "p" },
+    ];
+    const threads = [
+      { ...row("thr_lead", null), title: "lead", projectId: "p" },
+      { ...row("thr_site", null), title: "site", projectId: "p" },
+      { ...row("thr_c", "thr_site", { status: "active", indicator: "runtime" }), title: "child", projectId: "p" },
+      { ...row("thr_free", null, { status: "active", indicator: "runtime" }), title: "free", projectId: "p" },
+    ];
+    const slot = renderSlot(app.appOverlays[0]!, {}, {
+      rpc: { roster_list: () => ({ roles, launchDocUrl: null }), roster_activity: () => ({}) } as never,
+      sidebarThreads: { threads: threads as never },
+    });
+    const host = document.querySelector(`[${HOST_ATTR}]`)!;
+    await waitFor(() => expect(host.querySelectorAll("[data-agent-roster-role]")).toHaveLength(2));
+    const lead = host.querySelector('[data-agent-roster-role="lead"]')!;
+    const site = host.querySelector('[data-agent-roster-role="site"]')!;
+    expect(lead.querySelector('[data-agent-roster-channel="telegram"]')!.getAttribute("title")).toContain("Telegram");
+    expect(site.querySelector("[data-agent-roster-channel]")).toBeNull();
+    expect(lead.querySelectorAll("[data-role-icon]")).toHaveLength(1);
+    expect(site.querySelector("[data-agent-roster-work]")!.textContent!.replace(/\s/g, "")).toBe("1·1");
+    const toggle = site.querySelector("[data-agent-roster-toggle]") as HTMLButtonElement;
+    if (toggle.getAttribute("aria-expanded") !== "true") act(() => toggle.click());
+    expect(site.textContent).toContain("Под управлением");
+    expect(site.textContent).toContain("Не под управлением");
+    expect(site.querySelector('[data-unmanaged="thr_free"]')).not.toBeNull();
+    expect(site.querySelector('[data-executor="thr_c"]')).not.toBeNull();
+    slot.lifecycle.unmount();
+    await scripts.lifecycle.dispose();
+    window.localStorage.clear();
   });
 });

@@ -21,14 +21,65 @@ name, icon and place in the hierarchy stay.
 - **Page** «Агенты» in the navigation: the same tree, adding, editing every field,
   removing a role; the badge counts roles waiting for the owner.
 - **Thread menu**: «Сделать оркестратором…», «Изменить роль…», «Снять роль».
-- **Role mark on thread rows**: bb row status (shown by default in bb's list; it
-  never hides running, error or waiting) and a row-metadata mark (Machine Tabs
-  always draws it; bb's list with Rows → Metadata on).
+- **Role mark on thread rows**: one small mark before the row title (next to the
+  project icon), drawn by a stylesheet; bb's own state glyph on the right (running,
+  unread, error, waiting) is never replaced. Works in bb's list and Machine Tabs.
 - **For agents**: a short hint in every thread (its own role and how to get the
   list), the `agent_roster_list` tool and `bb agent-roster list|add|update|remove|set-thread`.
   Messages between agents use the standard `bb thread tell`.
 
 Commands: [skills/agent-roster/SKILL.md](skills/agent-roster/SKILL.md).
+
+### 0.2: work with an agent from the block
+
+- Roles stand side by side (no nesting of roles); "reports to" is text in the
+  tooltip and on the page.
+- A record expands to its executors: subthreads and their subthreads (two levels,
+  deeper ones as "ещё N"), finished and archived hidden behind a switch; the
+  expansion is remembered.
+- A line under the name: what the active thread is doing now or what it finished with.
+- «ждёт тебя»: the active thread or one of its executors waits for the owner; the
+  pill opens exactly that thread.
+- Work in the role's project: spinner and "own · others" — running subthreads of the
+  role (any depth) vs other running threads of the same project; another role's
+  threads are not counted. Expanded: two labelled groups.
+- Channels: a small Telegram mark when the bridge reports the role's thread or pair
+  bound to a chat (read-only `status` RPC of the bridge plugin; no data — no mark).
+- Quick message to the active thread (standard `threads.send`), and a record menu:
+  open, write, change role, move to another thread, remove role.
+- Data comes from bb's sidebar thread data (live), plus server reads on change; no
+  polling more often than every few seconds.
+
+## List format (stable contract)
+
+`bb agent-roster list --json` and the `agent_roster_list` tool return the same JSON:
+
+```json
+{
+  "formatVersion": 1,
+  "roles": [
+    {
+      "id": "site",
+      "name": "Site",
+      "kind": "orchestrator",
+      "responsibility": "website",
+      "reportsTo": null,
+      "reportsToName": null,
+      "projectId": "proj_…",
+      "activeThreadId": "thr_…",
+      "url": null
+    }
+  ]
+}
+```
+
+- `kind`: `agent` | `orchestrator` | `external`.
+- `reportsTo`: role id, `null` = the owner. `activeThreadId`: `null` when the role has
+  no active thread here (archived, deleted, none bound, or external). `url`: the link
+  of an external employee, otherwise `null`.
+- Fields are never renamed or removed; new ones are only added. A breaking change
+  would raise `formatVersion`. `tests/server.test.ts` pins this.
+
 
 ## Install
 

@@ -173,3 +173,79 @@ describe("text for agents", () => {
     expect(slugify("☆", new Set(["role"]))).toBe("role-2");
   });
 });
+
+import { cssString, markCss } from "../lib/row-marks";
+describe("row marks", () => {
+  it("escapes names and icons as CSS strings and skips bad thread ids", () => {
+    expect(cssString('a"}')).toBe('"\\61 \\22 \\7d "');
+    const css = markCss([role({ id: "x", name: '"}body{x', icon: "🧭", binding: { mode: "group", threadIds: ["thr_1", "thr_2"], bridgeTopicId: null } })]);
+    expect(css.split("\n")).toHaveLength(2);
+    expect(css).not.toContain('"}body');
+  });
+});
+
+import { activityLine, executorTree, summarize, summaryLabel } from "../model";
+describe("0.2: summary and executors", () => {
+  const r = (id: string, parentThreadId: string | null, extra: Record<string, unknown> = {}) =>
+    ({ id, parentThreadId, status: "idle", indicator: "none", hasPendingInteraction: false, isArchived: false, isHidden: false, ...extra });
+  const target = { kind: "thread" as const, threadId: "o", reason: "pinned" as const };
+  it("an idle thread with working executors reads «работают исполнители: N»", () => {
+    const rows = [r("o", null), r("a", "o", { status: "active" }), r("b", "a", { status: "active" }), r("c", "o")];
+    const s = summarize(target, rows);
+    expect(s).toMatchObject({ state: "executors", running: 2, total: 3 });
+    expect(summaryLabel(s)).toBe("работают исполнители: 2");
+  });
+  it("a waiting executor marks the record and names the thread to open", () => {
+    const rows = [r("o", null, { status: "active" }), r("a", "o"), r("q", "a", { hasPendingInteraction: true })];
+    expect(summarize(target, rows)).toMatchObject({ state: "running", waitingThreadId: "q" });
+    const own = [r("o", null, { indicator: "waiting-for-input" }), r("q", "o", { hasPendingInteraction: true })];
+    expect(summarize(target, own).waitingThreadId).toBe("o");
+  });
+  it("two levels deep, deeper ones counted as «ещё N»; finished hidden unless asked", () => {
+    const rows = [
+      r("o", null), r("a", "o", { status: "active" }), r("a1", "a", { status: "active" }), r("a1x", "a1", { status: "active" }),
+      r("a1y", "a1x", { status: "active" }), r("done", "o"), r("arch", "o", { isArchived: true, status: "active" }),
+    ];
+    const live = executorTree("o", rows, false);
+    expect(live.map((n) => [n.row.id, n.depth, n.hiddenBelow])).toEqual([["a", 1, 0], ["a1", 2, 2]]);
+    const all = executorTree("o", rows, true).map((n) => n.row.id);
+    expect(all).toEqual(expect.arrayContaining(["a", "a1", "done", "arch"]));
+  });
+  it("a finished parent with a live child stays so the child has a place", () => {
+    const rows = [r("o", null), r("p", "o"), r("c", "p", { status: "active" })];
+    expect(executorTree("o", rows, false).map((n) => n.row.id)).toEqual(["p", "c"]);
+  });
+  it("activity: the task while running, the result when finished, one line", () => {
+    expect(activityLine(true, "fix\n the  build", "old")).toBe("Занят: fix the build");
+    expect(activityLine(false, "task", "done all")).toBe("Закончил: done all");
+    expect(activityLine(false, null, null)).toBeNull();
+    expect(activityLine(false, null, "x".repeat(300))!.length).toBeLessThanOrEqual(150);
+  });
+});
+
+import { channelsFor, parseBridgeStatus, projectWork } from "../model";
+describe("0.2: project work and channels", () => {
+  const r = (id: string, parentThreadId: string | null, projectId: string, extra: Record<string, unknown> = {}) =>
+    ({ id, parentThreadId, projectId, status: "idle", indicator: "none", hasPendingInteraction: false, isArchived: false, isHidden: false, ...extra });
+  it("counts managed vs not managed running work of the role's project; another role's thread is not counted", () => {
+    const orch = role({ id: "o", kind: "orchestrator", binding: { mode: "pinned", threadId: "thr_o" } });
+    const other = role({ id: "x", binding: { mode: "pinned", threadId: "thr_x" } });
+    const rows = [
+      r("thr_o", null, "p"), r("thr_c", "thr_o", "p", { status: "active" }), r("thr_g", "thr_c", "p", { status: "active" }),
+      r("thr_free", null, "p", { status: "active" }), r("thr_x", null, "p", { status: "active" }), r("thr_xc", "thr_x", "p", { status: "active" }),
+      r("thr_far", null, "q", { status: "active" }), r("thr_idle", null, "p"),
+    ];
+    const w = projectWork(orch, { kind: "thread", threadId: "thr_o", reason: "pinned" }, rows, [orch, other]);
+    expect(w.own.sort()).toEqual(["thr_c", "thr_g"]);
+    expect(w.others).toEqual(["thr_free"]);
+  });
+  it("channels: a bound thread or the pair topic → Telegram with the chat in the tooltip; no data → none", () => {
+    const pair = role({ id: "a", binding: { mode: "group", threadIds: ["thr_1", "thr_2"], bridgeTopicId: 0 } });
+    const bridge = parseBridgeStatus({ bot: "some_bot", chatBindings: [{ topicId: 0, projectId: "p", threadId: "thr_1", ready: true }, "junk"] });
+    expect(channelsFor(pair, { kind: "thread", threadId: "thr_2", reason: "last-active" }, bridge)).toEqual([{ kind: "telegram", label: "Telegram: личный чат с ботом @some_bot" }]);
+    const pinned = role({ id: "b", binding: { mode: "pinned", threadId: "thr_9" } });
+    expect(channelsFor(pinned, { kind: "thread", threadId: "thr_9", reason: "pinned" }, parseBridgeStatus({ chatBindings: [{ topicId: 12, threadId: "thr_9" }] }))).toEqual([{ kind: "telegram", label: "Telegram: тема 12" }]);
+    expect(channelsFor(pinned, { kind: "none" }, parseBridgeStatus(undefined))).toEqual([]);
+    expect(parseBridgeStatus({ bot: "<script>", chatBindings: [{ topicId: -1 }] })).toEqual({ bot: null, bindings: [] });
+  });
+});

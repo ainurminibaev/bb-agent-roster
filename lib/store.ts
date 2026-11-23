@@ -5,7 +5,8 @@ import type { ResolvedRole, RoleKind } from "../model";
 
 export type DialogRequest =
   | { mode: "add"; kind: RoleKind; threadId: string | null; projectId: string | null }
-  | { mode: "edit"; roleId: string };
+  | { mode: "edit"; roleId: string }
+  | { mode: "move"; roleId: string };
 
 interface State {
   host: HTMLElement | null;
