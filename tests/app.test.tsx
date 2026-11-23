@@ -397,14 +397,19 @@ describe("0.2.1: go to project and the role icon", () => {
     const visible = (el: Element) => (Number(el.getAttribute("width")) * 12) / 14;
     const withLogo = renderSlot({ component: RoleIcon as never }, { role: { icon: "", kind: "orchestrator" }, logo: "data:image/svg+xml;base64,AA" } as never);
     expect(withLogo.container.querySelectorAll("[data-role-icon]")).toHaveLength(1);
-    expect(withLogo.container.querySelector("img")!.getAttribute("style")).toContain("grayscale(1)");
+    // An SVG logo is a mask in the text colour (its own fills are not trusted), a PNG is grayscale like Machine Tabs.
+    expect(withLogo.container.querySelector('[data-project-logo="mask"]')!.getAttribute("style")).toContain("data:image/svg+xml;base64,AA");
+    expect(withLogo.container.querySelector("img")).toBeNull();
     expect(visible(withLogo.container.querySelector('[data-crown="top"] svg')!)).toBeCloseTo(10);
     withLogo.lifecycle.unmount();
     const plain = renderSlot({ component: RoleIcon as never }, { role: { icon: "", kind: "agent" }, logo: null } as never);
     expect(visible(plain.container.querySelector('[data-crown="alone"] svg')!)).toBeCloseTo(18);
     plain.lifecycle.unmount();
     const main = renderSlot({ component: RoleIcon as never }, { role: { icon: "", kind: "agent", primary: true }, logo: "data:image/svg+xml;base64,AA", telegram: "Telegram: чат" } as never);
-    expect(main.container.querySelector("img")).toBeNull();
+    expect(main.container.querySelector("[data-project-logo]")).toBeNull();
+    const png = renderSlot({ component: RoleIcon as never }, { role: { icon: "", kind: "agent" }, logo: "data:image/png;base64,AA" } as never);
+    expect(png.container.querySelector('img[data-project-logo="image"]')!.getAttribute("style")).toContain("grayscale(1)");
+    png.lifecycle.unmount();
     const svg = main.container.querySelector('[data-crown="alone"] svg')!;
     expect(visible(svg)).toBeCloseTo(21);
     expect(svg.innerHTML).toContain("#e8c24a");
@@ -542,3 +547,104 @@ describe("0.4.2: the same state signs as bb's thread rows", () => {
     window.localStorage.clear();
   });
 });
+
+/**
+ * Which element takes a press at a point of `el`: the element itself, unless it or an ancestor
+ * below `row` lets presses through (pointer-events-none, until a pointer-events-auto). A
+ * press that passes through everything lands on the row's link — the absolute layer under them.
+ */
+function setExpanded(rec: Element, want: boolean) {
+  const t = rec.querySelector("[data-agent-roster-toggle]") as HTMLButtonElement;
+  if ((t.getAttribute("aria-expanded") === "true") !== want) act(() => t.click());
+}
+
+function catchesPress(el: Element, row: Element): Element | null {
+  let cur: Element | null = el;
+  while (cur && cur !== row) {
+    const cls = (cur.getAttribute("class") ?? "").split(/\s+/);
+    if (cls.includes("pointer-events-auto") || cur.tagName === "BUTTON" || cur.tagName === "A") return cur;
+    if (cls.includes("pointer-events-none")) return null;
+    cur = cur.parentElement;
+  }
+  // No pointer-events-none on the way: a positioned or later child sits over the link and keeps the press.
+  return el === row ? null : el;
+}
+
+describe("0.4.3: a press anywhere on a record opens its thread", () => {
+  it("icon, name, status line and the gap before the counter open the thread, collapsed and expanded; only the chevron expands; executor rows open their own thread", async () => {
+    machineTabsSidebar();
+    const scripts = await mountPluginContentScripts(app, { pluginId: "agent-roster" });
+    await frame();
+    const slot = renderSlot(app.appOverlays[0]!, {}, {
+      rpc: { roster_list: () => ({ roles: ROLES, launchDocUrl: null }), roster_activity: () => ({ thr_site: "Занят: вёрстка" }), roster_executors: () => ({ threads: [] }) } as never,
+      sidebarThreads: { threads: [
+        { ...row("thr_lead", null), title: "lead", href: "/t/lead" },
+        { ...row("thr_site", null), title: "site", href: "/t/site" },
+        { ...row("thr_c", "thr_site", { status: "active", indicator: "runtime" }), title: "child", href: "/t/c" },
+      ] as never },
+    });
+    const host = document.querySelector(`[${HOST_ATTR}]`)!;
+    await waitFor(() => expect(host.querySelector('[data-agent-roster-role="site"] [data-agent-roster-work], [data-agent-roster-total]')).not.toBeNull());
+    const rec = host.querySelector('[data-agent-roster-role="site"]')!;
+    const toggle = rec.querySelector("[data-agent-roster-toggle]") as HTMLButtonElement;
+    setExpanded(rec, false);
+    for (const state of ["collapsed", "expanded"]) {
+      const line = rec.querySelector("[data-agent-roster-line]")!;
+      const link = line.querySelector(":scope > [data-agent-roster-link]") as HTMLAnchorElement;
+      expect(link.getAttribute("href"), state).toBe("/t/site");
+      // the pointer shows a link over the whole record
+      expect((line.getAttribute("class") ?? "").split(/\s+/), state).toContain("cursor-pointer");
+      expect((link.getAttribute("class") ?? "").split(/\s+/), state).toContain("cursor-pointer");
+      const points = {
+        icon: line.querySelector("[data-role-icon]")!,
+        name: line.querySelector("[data-agent-roster-title] > span")!,
+        status: line.querySelector("[data-agent-roster-status]")!,
+        gap: line.querySelector("[data-agent-roster-name-line]")!,
+        counter: line.querySelector("[data-agent-roster-work], [data-agent-roster-total]")!,
+      };
+      for (const [where, el] of Object.entries(points)) expect(catchesPress(el, line), `${state}: ${where}`).toBeNull();
+      expect(points.status.tagName, state).not.toBe("BUTTON");
+      // a press on the status line does not fold or unfold the record
+      const before = toggle.getAttribute("aria-expanded");
+      fireEvent.click(points.status);
+      expect(toggle.getAttribute("aria-expanded"), state).toBe(before);
+      const calls = slot.inspection.navigateCalls.length;
+      fireEvent.click(link);
+      expect(slot.inspection.navigateCalls.length, state).toBe(calls + 1);
+      expect(JSON.stringify(slot.inspection.navigateCalls.at(-1)), state).toContain("thr_site");
+      // the chevron is the only control that expands, with its own pointer and hint
+      expect(catchesPress(toggle, line)).toBe(toggle);
+      expect((toggle.getAttribute("class") ?? "").split(/\s+/)).toContain("cursor-pointer");
+      expect(toggle.getAttribute("title")).toBeTruthy();
+      if (state === "collapsed") {
+        expect(toggle.getAttribute("aria-expanded")).toBe("false");
+        act(() => toggle.click());
+        await waitFor(() => expect(rec.querySelector('[data-executor="thr_c"]')).not.toBeNull());
+      }
+    }
+    // an executor row is a link to its own thread over the whole row
+    const exec = rec.querySelector('[data-executor="thr_c"]')!;
+    const execLink = exec.querySelector("[data-agent-roster-link]") as HTMLAnchorElement;
+    for (const el of exec.querySelectorAll("span")) expect(catchesPress(el, exec)).toBeNull();
+    fireEvent.click(execLink);
+    expect(JSON.stringify(slot.inspection.navigateCalls.at(-1))).toContain("thr_c");
+    act(() => toggle.click());
+    slot.lifecycle.unmount();
+    await scripts.lifecycle.dispose();
+    window.localStorage.clear();
+  });
+});
+
+describe("0.4.3: project logo kinds", () => {
+  it("an SVG with evenodd and fill=\"none\" on the root is drawn as a mask of the untouched file; PNG as an image", () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"><path fill-rule="evenodd" clip-rule="evenodd" d="M2 2h20v20H2zM12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10z" fill="currentColor"/></svg>';
+    const url = `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
+    const r = renderSlot({ component: RoleIcon as never }, { role: { icon: "", kind: "agent" }, logo: url } as never);
+    const el = r.container.querySelector('[data-project-logo="mask"]') as HTMLElement;
+    expect(el).not.toBeNull();
+    // the file goes in as is: same data URL, coloured from outside (bg-current)
+    expect(el.getAttribute("style")).toContain(url);
+    expect((el.getAttribute("class") ?? "").split(/\s+/)).toContain("bg-current");
+    expect(r.container.querySelector("img")).toBeNull();
+    r.lifecycle.unmount();
+  });});

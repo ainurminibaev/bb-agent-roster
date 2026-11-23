@@ -373,7 +373,8 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   // ---------- 0.2.1: project logos (monochrome on the client) ----------
-  const ICON_FILES = [{ path: ".bb/icon.svg", mime: "image/svg+xml" }, { path: ".bb/icon.png", mime: "image/png" }] as const;
+  // Same files and order as Machine Tabs reads, so the fallback finds the same picture.
+  const ICON_FILES = [{ path: ".bb/icon.png", mime: "image/png" }, { path: ".bb/icon.svg", mime: "image/svg+xml" }] as const;
   const iconCache = new Map<string, { at: number; url: string | null }>();
   async function iconFromFiles(projectId: string): Promise<string | null> {
     const project = (await bb.sdk.projects.get({ projectId })) as unknown as { sources?: { hostId?: string; path?: string; isDefault?: boolean }[] };
@@ -408,9 +409,10 @@ export default async function plugin(bb: BbPluginApi) {
   async function projectIcon(projectId: string): Promise<string | null> {
     const hit = iconCache.get(projectId);
     if (hit && Date.now() - hit.at < 10 * 60_000) return hit.url;
-    let url: string | null = null;
-    try { url = await iconFromFiles(projectId); } catch { url = null; }
-    url ??= await iconFromMachineTabs(projectId);
+    // The same picture as the thread rows: Machine Tabs' own icon first (it reads the project's
+    // files on its host); the plugin's own read of the files only as a fallback.
+    let url: string | null = await iconFromMachineTabs(projectId);
+    if (url === null) { try { url = await iconFromFiles(projectId); } catch { url = null; } }
     iconCache.set(projectId, { at: Date.now(), url });
     return url;
   }

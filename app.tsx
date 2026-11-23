@@ -269,6 +269,20 @@ export function Crown({ width, gold, className }: { width: number; gold?: boolea
  * A Telegram channel adds a small plane bottom right, no plate. An external
  * employee keeps the link.
  */
+/**
+ * The project picture, monochrome from outside, its file untouched: a PNG the way
+ * Machine Tabs draws it (grayscale), an SVG as a mask filled with the text colour —
+ * inside an <img> an SVG's `currentColor` is black, which turned dark logos into
+ * black blots; a mask keeps only the shape, whatever fills or fill rules it uses.
+ */
+export function ProjectLogo({ url }: { url: string }) {
+  if (url.startsWith("data:image/svg+xml")) {
+    const mask = `url("${url}") center / contain no-repeat`;
+    return <span data-project-logo="mask" className="absolute left-1 top-1.5 size-4 bg-current opacity-85" style={{ mask, WebkitMask: mask }} />;
+  }
+  return <img data-project-logo="image" src={url} alt="" className="absolute left-1 top-1.5 size-4 object-contain opacity-85" style={{ filter: "grayscale(1)" }} />;
+}
+
 export function RoleIcon({ role, className, logo, telegram }: { role: { icon: string; kind: RoleKind; primary?: boolean }; className?: string; logo?: string | null; telegram?: string | null }) {
   const titlesOff = useContext(CardOpen);
   const external = role.kind === "external";
@@ -281,7 +295,7 @@ export function RoleIcon({ role, className, logo, telegram }: { role: { icon: st
           <>
             {base === "icon"
               ? <span className="absolute left-1 top-1.5 flex size-4 items-center justify-center text-[14px] leading-none">{role.icon}</span>
-              : <img src={logo!} alt="" className="absolute left-1 top-1.5 size-4 object-contain opacity-85" style={{ filter: "grayscale(1)" }} />}
+              : <ProjectLogo url={logo!} />}
             <span data-crown="top" className="absolute left-[6.2px] top-0 leading-[0]"><Crown width={10} /></span>
           </>
         )
@@ -450,7 +464,7 @@ function ExecutorRow({ n, byId, dense, currentThreadId }: { n: ExecutorNode; byI
   return (
     <li data-executor={n.row.id} data-depth={n.depth} data-state={n.state} data-archived={n.row.isArchived ? "" : undefined} data-active={n.row.id === currentThreadId ? "" : undefined}
       title={`${title} — ${STATE_LABEL[n.state]}${n.row.isArchived ? " (архив)" : ""}`}
-      className={cn("relative flex items-center gap-1.5 rounded-md text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground", dense ? "h-6" : "h-8", n.row.id === currentThreadId && "bg-sidebar-accent text-sidebar-foreground")}
+      className={cn("relative flex cursor-pointer items-center gap-1.5 rounded-md text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground", dense ? "h-6" : "h-8", n.row.id === currentThreadId && "bg-sidebar-accent text-sidebar-foreground")}
       style={{ paddingLeft: `${(dense ? 36 : 40) + (n.depth - 1) * 14}px`, paddingRight: 8 }}>
       <ThreadLink threadId={n.row.id} href={byId.get(n.row.id)?.href ?? null} label={`Открыть ${title}`} />
       <span className={cn("pointer-events-none min-w-0 flex-1 truncate", n.row.isArchived && "opacity-70")}>{title}</span>
@@ -516,7 +530,7 @@ function Executors({ role, rows, dense, others }: { role: ResolvedRole; rows: { 
           {groupLabel("не под управлением")}
           {others.map((id) => (
             <li key={id} data-unmanaged={id} data-active={id === currentThreadId ? "" : undefined} title={`${rows.byId.get(id)?.title ?? id} — работает, не под управлением роли`}
-              className={cn("relative flex items-center gap-1.5 rounded-md text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground", dense ? "h-6" : "h-8", id === currentThreadId && "bg-sidebar-accent text-sidebar-foreground")}
+              className={cn("relative flex cursor-pointer items-center gap-1.5 rounded-md text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground", dense ? "h-6" : "h-8", id === currentThreadId && "bg-sidebar-accent text-sidebar-foreground")}
               style={{ ...pad, paddingRight: 8 }}>
               <ThreadLink threadId={id} href={rows.byId.get(id)?.href ?? null} label={`Открыть ${rows.byId.get(id)?.title ?? id}`} />
               <span className="pointer-events-none min-w-0 flex-1 truncate">{rows.byId.get(id)?.title ?? id}</span>
@@ -549,7 +563,7 @@ function ThreadLink({ threadId, href, label, className }: { threadId: string; hr
   return (
     <a href={href ?? undefined} draggable={false} aria-label={label} data-agent-roster-link={threadId}
       {...split.splitProps}
-      className={cn("absolute inset-0 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring", className)}
+      className={cn("absolute inset-0 cursor-pointer rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring", className)}
       onClick={(event) => {
         if (event.button !== 0 || event.shiftKey || event.altKey) return;
         event.preventDefault();
@@ -592,7 +606,7 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
         <HoverCardTrigger asChild>
           <div data-agent-roster-line=""
             onPointerMove={(e) => { if (!cardOpen) pointerX.current = Math.max(0, e.clientX - e.currentTarget.getBoundingClientRect().left); }}
-            className={cn("group/role relative flex items-center gap-2 rounded-md py-0.5 pr-1 hover:bg-sidebar-accent", active && "bg-sidebar-accent")}
+            className={cn("group/role relative flex cursor-pointer items-center gap-2 rounded-md py-0.5 pr-1 hover:bg-sidebar-accent", active && "bg-sidebar-accent")}
             style={{ paddingLeft: leftPad }}>
             {threadId ? (
               <ThreadLink threadId={threadId} href={rows.byId.get(threadId)?.href ?? null} label={`Открыть ${role.name}`} />
@@ -601,7 +615,7 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
                 onClick={(e) => { if (role.active.kind === "external") navigate.openUrl(role.active.url); else openDialog({ mode: "edit", roleId: role.id }); closeMobileDrawer(e.currentTarget); }} />
             )}
             <RoleIcon role={role} logo={projectLogo} telegram={(role.channels ?? []).find((c) => c.kind === "telegram")?.label ?? null} className="pointer-events-none" />
-            <span data-agent-roster-text="" className="relative flex min-w-0 flex-1 flex-col">
+            <span data-agent-roster-text="" className="pointer-events-none relative flex min-w-0 flex-1 flex-col">
             <span data-agent-roster-name-line="" className="pointer-events-none relative flex h-5 min-w-0 items-center gap-2 text-sm">
               {/* The project wraps to a hidden second line when fewer than ~5 characters of it fit: no lone dash. */}
               <span data-agent-roster-title="" className="flex h-5 min-w-0 flex-1 flex-wrap items-baseline overflow-hidden leading-5">
@@ -618,8 +632,9 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
                 </button>
               ) : null}
               <button type="button" data-agent-roster-toggle="" aria-label={isOpen ? `Свернуть ${role.name}` : `Раскрыть ${role.name}`} aria-expanded={isOpen}
+                title={cardOpen ? undefined : isOpen ? "Свернуть исполнителей" : "Показать исполнителей"}
                 disabled={!canExpand}
-                className="pointer-events-auto relative z-10 flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-sidebar-foreground disabled:opacity-30"
+                className="pointer-events-auto relative z-10 flex size-5 cursor-pointer disabled:cursor-default shrink-0 items-center justify-center rounded text-muted-foreground hover:text-sidebar-foreground disabled:opacity-30"
                 onClick={() => toggleExpanded(role.id)}>
                 <svg viewBox="0 0 24 24" className={cn("size-3.5 transition-transform", isOpen && "rotate-90")} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
               </button>
@@ -634,11 +649,10 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
                 <RecordMenu role={role} dense={dense} projectId={projectId} onWrite={() => setWriting(true)} />
               </span>
             </span>
-            <button type="button" data-agent-roster-status="" disabled={!canExpand} aria-label={`${second}. ${isOpen ? "Свернуть" : "Раскрыть"} исполнителей`}
-              className="relative z-10 block h-4 w-full min-w-0 truncate pr-12 text-left text-[11px] leading-4 text-muted-foreground disabled:cursor-default"
-              onClick={() => toggleExpanded(role.id)}>
+            {/* Part of the record's link: a press here opens the thread, expanding is the chevron's job only. */}
+            <span data-agent-roster-status="" className="block h-4 w-full min-w-0 truncate pr-12 text-left text-[11px] leading-4 text-muted-foreground">
               {second}
-            </button>
+            </span>
             </span>
           </div>
         </HoverCardTrigger>
