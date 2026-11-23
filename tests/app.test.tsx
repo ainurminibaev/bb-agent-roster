@@ -506,6 +506,14 @@ describe("0.4.3: no element takes place only for the hover", () => {
       const slot = line.querySelector("[data-agent-roster-menu-slot]")!;
       const cls = (slot.getAttribute("class") ?? "").split(/\s+/);
       expect(cls).toEqual(expect.arrayContaining(["absolute", "invisible", "group-hover/role:visible"]));
+      // Grid: «⋯» is bb's row action — a 28×28 button with 6px corners and a 16px icon, on the same
+      // 28px cell at the right edge as the state cell (bb's "Thread actions" sits on its trailing cell).
+      expect(cls).toEqual(expect.arrayContaining(["right-0", "size-7", "rounded-md", "top-1/2", "-translate-y-1/2"]));
+      const trailing = line.querySelector("[data-agent-roster-trailing]")!;
+      expect((trailing.getAttribute("class") ?? "").split(/\s+/)).toContain("w-7");
+      const button = slot.querySelector("[data-agent-roster-menu-button]")!;
+      expect((button.getAttribute("class") ?? "").split(/\s+/)).toEqual(expect.arrayContaining(["size-7", "rounded-md", "hover:bg-state-hover", "cursor-pointer"]));
+      expect((button.querySelector("svg")!.getAttribute("class") ?? "").split(/\s+/)).toContain("size-4");
       const nameLine = line.querySelector("[data-agent-roster-name-line]")!;
       const flow = Array.from(nameLine.children).filter((c) => !(c.getAttribute("class") ?? "").split(/\s+/).includes("absolute"));
       expect(flow.at(-1)!.hasAttribute("data-agent-roster-trailing")).toBe(true);

@@ -386,8 +386,9 @@ function RecordMenu({ role, dense, projectId, onWrite }: { role: ResolvedRole; d
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button type="button" aria-label={`Действия: ${role.name}`} data-agent-roster-menu-button=""
-          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-sidebar-foreground">
-          <svg viewBox="0 0 24 24" className="size-3.5" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
+          className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-subtle-foreground hover:bg-state-hover hover:text-muted-foreground active:bg-state-active data-[state=open]:bg-state-active data-[state=open]:text-muted-foreground">
+          {/* bb's row action: a 28×28 button, 6px corners, a 16px icon, state-hover under it. */}
+          <svg viewBox="0 0 24 24" className="size-4" fill="currentColor" aria-hidden="true"><circle cx="6" cy="12.25" r="1.5" /><circle cx="12" cy="12.25" r="1.5" /><circle cx="18" cy="12.25" r="1.5" /></svg>
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" data-agent-roster-menu="">
@@ -669,7 +670,7 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
               {/* «⋯» takes no place of its own: with a mouse it shows over the state cell on hover, on the row's hover
                   colour (bb's hover actions do the same); on touch screens it is always shown, in the flow. */}
               <span data-agent-roster-menu-slot=""
-                className="pointer-events-auto invisible absolute right-0 top-0 z-20 flex h-5 items-center rounded bg-sidebar-accent group-hover/role:visible group-focus-within/role:visible has-[[data-state=open]]:visible [@media(hover:none)]:visible [@media(hover:none)]:static [@media(hover:none)]:bg-transparent">
+                className="pointer-events-auto invisible absolute right-0 top-1/2 z-20 flex size-7 -translate-y-1/2 items-center justify-center rounded-md bg-sidebar-accent group-hover/role:visible group-focus-within/role:visible has-[[data-state=open]]:visible [@media(hover:none)]:visible [@media(hover:none)]:static [@media(hover:none)]:translate-y-0 [@media(hover:none)]:bg-transparent">
                 <RecordMenu role={role} dense={dense} projectId={projectId} onWrite={() => setWriting(true)} />
               </span>
             </span>
