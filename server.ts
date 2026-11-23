@@ -33,6 +33,7 @@ import {
   channelsFor,
   parseBridgeStatus,
   listJson,
+  setPrimary,
 } from "./model";
 
 export const STORAGE_KEY = "roster";
@@ -59,6 +60,8 @@ const roleInput = z.object({
   parentId: z.string().max(48).nullable().default(null),
   projectId: z.string().max(64).nullable().default(null),
   binding: bindingSchema,
+  /** Main record; true clears it from every other record. Omitted → unchanged (false for a new role). */
+  primary: z.boolean().optional(),
 });
 export type RoleInput = z.input<typeof roleInput>;
 
@@ -76,6 +79,7 @@ const roleSchema = z.object({
   parentId: z.string().nullable(),
   projectId: z.string().nullable(),
   binding: bindingSchema,
+  primary: z.boolean(),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
@@ -105,6 +109,14 @@ export const rpcContract = defineRpcContract({
     output: z.object({
       threads: z.array(z.object({ id: z.string(), parentThreadId: z.string().nullable(), title: z.string(), status: z.string(), isArchived: z.boolean() })),
     }),
+  },
+  roster_details: {
+    input: z.object({ threadId: z.string().max(64) }),
+    output: z.object({ activity: z.string().nullable(), model: z.string().nullable(), providerId: z.string().nullable(), lastActiveAt: z.number().nullable() }),
+  },
+  roster_project_icons: {
+    input: z.object({ projectIds: z.array(z.string().max(64)).max(50) }),
+    output: z.record(z.string(), z.string().nullable()),
   },
   roster_set_thread: {
     input: z.object({ id: z.string().max(48), threadId: z.string().max(64), replace: z.string().max(64).nullable().default(null) }),
@@ -246,6 +258,7 @@ export default async function plugin(bb: BbPluginApi) {
       parentId,
       projectId: input.projectId || null,
       binding,
+      primary: input.primary ?? (existing ? existing.primary : false),
     };
   }
   function upsert(raw: RoleInput): Promise<Role> {
@@ -259,7 +272,8 @@ export default async function plugin(bb: BbPluginApi) {
       const role: Role = existing
         ? { ...existing, ...fields, updatedAt: now }
         : { id: slugify(input.name, new Set(draft.roles.map((r) => r.id))), ...fields, createdAt: now, updatedAt: now };
-      const roles = existing ? draft.roles.map((r) => (r.id === role.id ? role : r)) : [...draft.roles, role];
+      let roles = existing ? draft.roles.map((r) => (r.id === role.id ? role : r)) : [...draft.roles, role];
+      if (role.primary) roles = setPrimary(roles, role.id);
       return { roster: { version: 1, roles }, result: role };
     });
   }
@@ -328,7 +342,67 @@ export default async function plugin(bb: BbPluginApi) {
     return { threads: rows.filter((r): r is NonNullable<typeof r> => r !== null) };
   }
 
+  async function details(threadId: string) {
+    const activity = await activityFor(threadId);
+    let providerId: string | null = null, lastActiveAt: number | null = null, model: string | null = null;
+    try {
+      const t = (await bb.sdk.threads.get({ threadId })) as unknown as Record<string, unknown>;
+      providerId = typeof t.providerId === "string" ? t.providerId : null;
+      lastActiveAt = Math.max(Number(t.updatedAt) || 0, Number(t.latestAttentionAt) || 0) || null;
+    } catch { /* gone */ }
+    try {
+      const opts = (await bb.sdk.threads.defaultExecutionOptions({ threadId } as never)) as unknown as Record<string, unknown> | null;
+      model = opts && typeof opts.model === "string" ? opts.model : null;
+    } catch { /* unknown model */ }
+    return { activity, model, providerId, lastActiveAt };
+  }
+
+  // ---------- 0.2.1: project logos (monochrome on the client) ----------
+  const ICON_FILES = [{ path: ".bb/icon.svg", mime: "image/svg+xml" }, { path: ".bb/icon.png", mime: "image/png" }] as const;
+  const iconCache = new Map<string, { at: number; url: string | null }>();
+  async function iconFromFiles(projectId: string): Promise<string | null> {
+    const project = (await bb.sdk.projects.get({ projectId })) as unknown as { sources?: { hostId?: string; path?: string; isDefault?: boolean }[] };
+    const sources = (project.sources ?? []).filter((x) => typeof x.hostId === "string" && typeof x.path === "string" && x.path)
+      .sort((a, b) => Number(Boolean(b.isDefault)) - Number(Boolean(a.isDefault)));
+    for (const source of sources) {
+      for (const file of ICON_FILES) {
+        try {
+          const read = (await bb.sdk.files.read({ hostId: source.hostId!, path: file.path, rootPath: source.path!, signal: AbortSignal.timeout(3000) } as never)) as unknown as { content?: string; contentEncoding?: string; sizeBytes?: number };
+          if (typeof read.content !== "string" || (read.sizeBytes ?? 0) > 256 * 1024) continue;
+          const b64 = read.contentEncoding === "base64" ? read.content : Buffer.from(read.content, "utf8").toString("base64");
+          return `data:${file.mime};base64,${b64}`;
+        } catch { /* not there or host offline: try the next */ }
+      }
+    }
+    return null;
+  }
+  let machineTabsIcons: { at: number; icons: Record<string, string> } | null = null;
+  async function iconFromMachineTabs(projectId: string): Promise<string | null> {
+    try {
+      if (!machineTabsIcons || Date.now() - machineTabsIcons.at > 10 * 60_000) {
+        const out = await bb.sdk.plugins.callRpc({ pluginId: "machine-tabs", method: "project_icons", input: { refresh: false }, outputSchema: z.unknown(), signal: AbortSignal.timeout(3000) });
+        const icons = out && typeof out === "object" && (out as { icons?: unknown }).icons && typeof (out as { icons: unknown }).icons === "object" ? (out as { icons: Record<string, unknown> }).icons : {};
+        machineTabsIcons = { at: Date.now(), icons: Object.fromEntries(Object.entries(icons).filter((e): e is [string, string] => typeof e[1] === "string" && /^data:image\/(png|svg\+xml|x-icon);base64,/.test(e[1]))) };
+      }
+      return machineTabsIcons.icons[projectId] ?? null;
+    } catch {
+      return null; // no Machine Tabs, older version, other format: no logo
+    }
+  }
+  async function projectIcon(projectId: string): Promise<string | null> {
+    const hit = iconCache.get(projectId);
+    if (hit && Date.now() - hit.at < 10 * 60_000) return hit.url;
+    let url: string | null = null;
+    try { url = await iconFromFiles(projectId); } catch { url = null; }
+    url ??= await iconFromMachineTabs(projectId);
+    iconCache.set(projectId, { at: Date.now(), url });
+    return url;
+  }
+
   bb.rpc.register(rpcContract, {
+    roster_project_icons: async ({ projectIds }) =>
+      Object.fromEntries(await Promise.all([...new Set(projectIds)].map(async (id) => [id, await projectIcon(id)] as const))),
+    roster_details: ({ threadId }) => (isThreadId(threadId) ? details(threadId) : Promise.resolve({ activity: null, model: null, providerId: null, lastActiveAt: null })),
     roster_activity: async ({ threadIds }) => {
       const entries = await Promise.all(threadIds.map(async (id) => [id, await activityFor(id)] as const));
       return Object.fromEntries(entries);
@@ -389,12 +463,13 @@ export default async function plugin(bb: BbPluginApi) {
     threads: { type: "string", split: ",", repeatable: true, description: `Several threads of one role (comma-separated, ≤ ${LIMITS.groupThreads}); the last active one is used` },
     "bridge-topic": { type: "integer", min: 0, max: 2 ** 31, description: "Topic number of the bridge pair that names the active thread" },
     url: { type: "string", description: "Link for an external employee (http/https)" },
+    primary: { type: "enum", values: ["on", "off"], description: "The one main record (gold crown); on clears it from the previous main record" },
     json: { type: "boolean", description: "Machine-readable output" },
   } as const;
 
   type RoleOpts = {
     name?: string; kind?: RoleKind; about?: string; icon?: string; parent?: string; project?: string;
-    thread?: string; threads?: string[]; "bridge-topic"?: number; url?: string;
+    thread?: string; threads?: string[]; "bridge-topic"?: number; url?: string; primary?: "on" | "off";
   };
   function bindingFrom(o: RoleOpts, base: Binding | null, ctxThread: string | undefined): Binding {
     if (o.url !== undefined) return { mode: "external", url: o.url };
@@ -433,6 +508,7 @@ export default async function plugin(bb: BbPluginApi) {
               name: o.name, kind: o.kind, responsibility: o.about ?? "", icon: o.icon ?? "",
               parentId: parentFrom(o.parent, null), projectId: o.project ?? ctx.projectId ?? null,
               binding: bindingFrom(o, o.kind === "external" ? { mode: "external", url: "" } : null, ctx.threadId),
+              ...(o.primary ? { primary: o.primary === "on" } : {}),
             });
             return out(o.json, role, `Added ${role.name} (${KIND_LABEL[role.kind]}), id ${role.id}.`);
           } catch (error) { return fail(error); }
@@ -452,6 +528,7 @@ export default async function plugin(bb: BbPluginApi) {
               responsibility: o.about ?? role.responsibility, icon: o.icon ?? role.icon,
               parentId: parentFrom(o.parent, role.parentId), projectId: o.project ?? role.projectId,
               binding: bindingFrom(o, role.binding, ctx.threadId),
+              ...(o.primary ? { primary: o.primary === "on" } : {}),
             });
             return out(o.json, next, `Updated ${next.name}.`);
           } catch (error) { return fail(error); }

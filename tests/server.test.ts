@@ -159,3 +159,46 @@ describe("list format contract (formatVersion 1)", () => {
     expect(byName.Ext).toMatchObject({ kind: "external", activeThreadId: null, url: "https://example.org/ext" });
   });
 });
+
+describe("0.2.1: project logos", () => {
+  it("reads .bb/icon.svg through bb's files; falls back to Machine Tabs; nothing → null without errors", async () => {
+    const h = await setup({});
+    h.harness.sdk.stub("projects.get", async ({ projectId }: { projectId: string }) => ({ sources: [{ hostId: "h1", path: `/p/${projectId}`, isDefault: true }] }) as never);
+    h.harness.sdk.stub("files.read", async ({ rootPath, path }: { rootPath: string; path: string }) => {
+      if (rootPath === "/p/a" && path === ".bb/icon.svg") return { content: "<svg/>", contentEncoding: "utf8", sizeBytes: 6 } as never;
+      throw new Error("ENOENT");
+    });
+    let calls = 0;
+    h.harness.sdk.stub("plugins.callRpc", async ({ pluginId, method }: { pluginId: string; method: string }) => {
+      calls += 1;
+      if (pluginId === "machine-tabs" && method === "project_icons") return { icons: { b: "data:image/png;base64,AAAA", c: "javascript:alert(1)" } };
+      throw new Error("no");
+    });
+    const out = await h.harness.behavior.callRpc("roster_project_icons", { projectIds: ["a", "b", "c", "d"] }) as Record<string, string | null>;
+    expect(out.a).toBe(`data:image/svg+xml;base64,${Buffer.from("<svg/>").toString("base64")}`);
+    expect(out.b).toBe("data:image/png;base64,AAAA");
+    expect(out.c).toBeNull();
+    expect(out.d).toBeNull();
+    expect(calls).toBeGreaterThan(0);
+  });
+  it("no source at all (no files, no Machine Tabs) → null", async () => {
+    const h = await setup({});
+    h.harness.sdk.stub("projects.get", async () => { throw new Error("gone"); });
+    const out = await h.harness.behavior.callRpc("roster_project_icons", { projectIds: ["x"] });
+    expect(out).toEqual({ x: null });
+  });
+});
+
+describe("0.2.1: main record via CLI", () => {
+  it("marking another record main clears the previous one; the list JSON carries `primary`", async () => {
+    const h = await setup({ thr_a: {}, thr_b: {} });
+    await cli(h, ["add", "--name", "A", "--kind", "agent", "--thread", "thr_a", "--primary", "on"]);
+    await cli(h, ["add", "--name", "B", "--kind", "orchestrator", "--thread", "thr_b"]);
+    let list = JSON.parse((await cli(h, ["list", "--json"])).stdout);
+    expect(list.roles.filter((r: { primary: boolean }) => r.primary).map((r: { id: string }) => r.id)).toEqual(["a"]);
+    await cli(h, ["update", "b", "--primary", "on"]);
+    list = JSON.parse((await cli(h, ["list", "--json"])).stdout);
+    expect(list.roles.filter((r: { primary: boolean }) => r.primary).map((r: { id: string }) => r.id)).toEqual(["b"]);
+    expect(list.formatVersion).toBe(1);
+  });
+});

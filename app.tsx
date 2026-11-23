@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
+import type { ExperimentalThreadRowMetadataProps } from "@get-bb/plugin-sdk/app";
 import {
   definePluginApp,
   experimental_THREAD_ACTION_GROUPS,
   experimental_useSidebarThreads,
+  experimental_useSidebarThreadSplit,
+  useBbContext,
   useBbNavigate,
   useRealtime,
   useRpc,
@@ -25,6 +28,7 @@ import {
   type RoleState,
   summarize,
   summaryLabel,
+  rowMarkFor,
   projectWork,
   rolesForThread,
   type RowFacts,
@@ -33,11 +37,13 @@ import {
 } from "./model";
 import { getState, openDialog, setState, subscribe, useStore, type DialogRequest } from "./lib/store";
 import { HOST_ATTR, keepPlaced } from "./lib/anchor";
-import { mountRowMarks } from "./lib/row-marks";
+import { revealProject, revealSupported } from "./lib/reveal";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Icon } from "@/components/ui/icon";
 import { Input } from "@/components/ui/input";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
 export const CHANGED = "roster-changed";
@@ -80,6 +86,7 @@ function useRoles(): ResolvedRole[] | null {
 export interface Row extends RowFacts {
   title: string;
   projectId: string | null;
+  href: string | null;
 }
 function useRows(): { rows: Row[]; byId: Map<string, Row> } {
   const { threads } = experimental_useSidebarThreads();
@@ -94,6 +101,7 @@ function useRows(): { rows: Row[]; byId: Map<string, Row> } {
       isHidden: Boolean(t.isHidden),
       title: String(t.displayTitle ?? t.title ?? t.id),
       projectId: typeof t.projectId === "string" ? t.projectId : null,
+      href: typeof t.href === "string" ? t.href : null,
     }));
     return { rows, byId: new Map(rows.map((r) => [r.id, r])) };
   }, [threads]);
@@ -106,8 +114,8 @@ function StateMark({ state, label }: { state: RoleState; label?: string }) {
   const aria = label ?? STATE_LABEL[state];
   if (state === "running" || state === "executors") {
     return (
-      <span data-state-mark="" role="status" aria-label={aria} title={aria} className="inline-flex size-3.5 shrink-0 items-center justify-center">
-        <span className={cn("size-3 animate-spin rounded-full border-[1.5px]", state === "running" ? "border-muted-foreground/30 border-t-muted-foreground" : "border-muted-foreground/20 border-t-muted-foreground/60")} />
+      <span data-state-mark="" data-spinning="" role="status" aria-label={aria} title={aria} className="inline-flex size-3.5 shrink-0 items-center justify-center text-muted-foreground">
+        <Icon name="Loading" className="size-3 animate-spin" />
       </span>
     );
   }
@@ -125,21 +133,49 @@ const STATE_CLASS: Record<RoleState, string> = {
   error: "bg-red-500",
   idle: "bg-muted-foreground/40",
   none: "border border-muted-foreground/50 bg-transparent",
-  external: "bg-violet-400",
+  external: "bg-muted-foreground/40",
 };
 
-/** A channel the record is reachable by (not a role icon): Telegram's paper plane. */
-function ChannelMark({ label }: { label: string }) {
+/**
+ * The one channel mark of the plugin (block, page, details card): Telegram's
+ * paper plane from its mark, filled with the muted text colour. Not a role icon.
+ */
+export function ChannelMark({ label }: { label: string }) {
   return (
-    <span data-agent-roster-channel="telegram" role="img" aria-label={label} title={label} className="inline-flex size-3.5 shrink-0 items-center justify-center text-sky-500">
-      <svg viewBox="0 0 24 24" className="size-3" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 4 3 11l6 2 2 6 3-4 5 4z" /><path d="m9 13 12-9" /></svg>
+    <span data-agent-roster-channel="telegram" role="img" aria-label={label} title={label} className="inline-flex size-3.5 shrink-0 items-center justify-center text-muted-foreground">
+      <svg viewBox="0 0 24 24" className="size-3" fill="currentColor" aria-hidden="true">
+        <path d="M21.4 3.6 2.9 10.8c-1.2.5-1.2 1.2-.2 1.5l4.7 1.5 1.8 5.6c.2.6.4.8.9.8.4 0 .6-.2.9-.4l2.3-2.2 4.8 3.5c.9.5 1.5.2 1.7-.8L22.9 5c.3-1.3-.5-1.9-1.5-1.4Zm-3.3 3.6-8.9 8-.4 3.7-1.5-4.7 10.4-6.6c.5-.3.8 0 .4.4Z" />
+      </svg>
     </span>
   );
 }
 
-export function RoleIcon({ role, className }: { role: { icon: string; kind: RoleKind }; className?: string }) {
-  if (role.icon) return <span data-role-icon="" className={cn("inline-flex w-4 shrink-0 justify-center text-[13px] leading-none", className)} aria-hidden="true">{role.icon}</span>;
-  return <span data-role-icon="" className="inline-flex shrink-0" aria-hidden="true"><Icon name={KIND_ICON[role.kind]} className={cn("size-4 shrink-0", className)} /></span>;
+/** The only colour the plugin draws: the main record's crown — one calm gold for light and dark themes. */
+export const GOLD = "#c9a227";
+
+/**
+ * One role icon. Main picture: the owner's own icon if set, else the project's
+ * logo (monochrome), else the role mark itself — the crown (gold for the main
+ * record), or the link glyph for an external employee. When the main picture is
+ * not the crown, the crown sits small in the corner.
+ */
+export function RoleIcon({ role, className, logo }: { role: { icon: string; kind: RoleKind; primary?: boolean }; className?: string; logo?: string | null }) {
+  const external = role.kind === "external";
+  const useLogo = !role.icon && !external && !!logo;
+  const corner = !external && (role.icon || useLogo);
+  const crownStyle = role.primary ? { color: GOLD } : undefined;
+  return (
+    <span data-role-icon="" data-primary={role.primary ? "" : undefined} className={cn("relative inline-flex size-4 shrink-0 items-center justify-center", className)} aria-hidden="true">
+      {role.icon ? <span className="text-[13px] leading-none">{role.icon}</span>
+        : useLogo ? <img src={logo!} alt="" className="size-4 rounded-[4px] object-contain opacity-80" style={{ filter: "grayscale(1)" }} />
+        : <span className="inline-flex" style={crownStyle}><Icon name={KIND_ICON[role.kind]} className="size-4" /></span>}
+      {corner ? (
+        <span data-kind-corner="" className="absolute -bottom-1 -right-1 flex size-[11px] items-center justify-center rounded-full bg-sidebar text-muted-foreground" style={crownStyle}>
+          <Icon name={KIND_ICON[role.kind]} className="size-[9px]" />
+        </span>
+      ) : null}
+    </span>
+  );
 }
 
 // ---------- per-record UI state, remembered ----------
@@ -196,34 +232,52 @@ interface RowProps {
   dense: boolean;
 }
 
-function RecordMenu({ role, onClose, onWrite }: { role: ResolvedRole; onClose: () => void; onWrite: () => void }) {
+function RecordMenu({ role, dense, projectId, onWrite }: { role: ResolvedRole; dense: boolean; projectId?: string | null; onWrite: () => void }) {
   const rpc = useRpc<typeof rpcContract>();
   const open = useOpenRole();
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const away = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onClose(); };
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("mousedown", away);
-    document.addEventListener("keydown", esc);
-    return () => { document.removeEventListener("mousedown", away); document.removeEventListener("keydown", esc); };
-  }, [onClose]);
+  const navigate = useBbNavigate();
   const items: { id: string; label: string; run: () => void; danger?: boolean; disabled?: boolean }[] = [
     { id: "open", label: "Открыть", run: () => open(role) },
     { id: "write", label: "Написать…", run: onWrite, disabled: role.active.kind !== "thread" },
+    { id: "details", label: "Сведения", run: () => openDialog({ mode: "details", roleId: role.id }) },
+    ...(projectId && revealSupported() ? [{ id: "reveal", label: "Перейти к проекту", run: () => { if (!revealProject(projectId)) navigate.toProject(projectId); } }] : []),
     { id: "edit", label: "Изменить роль…", run: () => openDialog({ mode: "edit", roleId: role.id }) },
     { id: "move", label: "Перевести на другой тред…", run: () => openDialog({ mode: "move", roleId: role.id }), disabled: role.kind === "external" },
     { id: "remove", label: "Снять роль", danger: true, run: () => { void rpc.call("roster_remove", { id: role.id }).then(() => refresh(rpc)); } },
   ];
   return (
-    <div ref={ref} role="menu" data-agent-roster-menu="" className="absolute right-1 top-7 z-50 min-w-48 rounded-md border border-border bg-popover p-1 text-sm text-popover-foreground shadow-md">
-      {items.map((item) => (
-        <button key={item.id} type="button" role="menuitem" disabled={item.disabled}
-          className={cn("flex w-full items-center rounded-sm px-2 py-1.5 text-left hover:bg-accent disabled:opacity-40", item.danger && "text-red-500")}
-          onClick={() => { onClose(); item.run(); }}>
-          {item.label}
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button type="button" aria-label={`Действия: ${role.name}`} data-agent-roster-menu-button=""
+          className={cn("size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-sidebar-foreground data-[state=open]:flex", dense ? "hidden group-hover/role:flex group-focus-within/role:flex" : "flex")}>
+          <svg viewBox="0 0 24 24" className="size-3.5" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
         </button>
-      ))}
-    </div>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" data-agent-roster-menu="">
+        {items.map((item, i) => (
+          <Fragment key={item.id}>
+            {item.danger && i > 0 ? <DropdownMenuSeparator /> : null}
+            <DropdownMenuItem disabled={item.disabled} className={cn(item.danger && "text-red-500")} onSelect={() => item.run()}>{item.label}</DropdownMenuItem>
+          </Fragment>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** "Сведения": the same card as the long hover, for phones where there is no hover. */
+export function DetailsDialog() {
+  const request = useStore((s) => s.dialog);
+  const roles = useRoles();
+  const rows = useRows();
+  const role = request?.mode === "details" ? roles?.find((r) => r.id === request.roleId) ?? null : null;
+  return (
+    <Dialog open={role !== null} onOpenChange={(o) => { if (!o) setState({ dialog: null }); }}>
+      <DialogContent className="sm:max-w-sm" data-agent-roster-details="">
+        <DialogHeader><DialogTitle>Сведения</DialogTitle><DialogDescription className="sr-only">Сведения о записи</DialogDescription></DialogHeader>
+        {role ? <RoleCard role={role} rows={rows} /> : null}
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -270,8 +324,8 @@ function QuickMessage({ role, onDone }: { role: ResolvedRole; onDone: () => void
 }
 
 function Executors({ role, rows, dense, others }: { role: ResolvedRole; rows: { rows: Row[]; byId: Map<string, Row> }; dense: boolean; others: string[] }) {
-  const navigate = useBbNavigate();
   const rpc = useRpc<typeof rpcContract>();
+  const { threadId: currentThreadId } = useBbContext();
   const [showFinished, setShowFinished] = useState(false);
   const [archived, setArchived] = useState<Row[]>([]);
   const rootId = role.active.kind === "thread" ? role.active.threadId : null;
@@ -282,7 +336,7 @@ function Executors({ role, rows, dense, others }: { role: ResolvedRole; rows: { 
       if (!live) return;
       setArchived(r.threads.filter((t) => t.isArchived).map((t) => ({
         id: t.id, parentThreadId: t.parentThreadId, status: t.status, indicator: "none",
-        hasPendingInteraction: false, isArchived: true, isHidden: false, title: t.title, projectId: null,
+        hasPendingInteraction: false, isArchived: true, isHidden: false, title: t.title, projectId: null, href: null,
       })));
     }, () => undefined);
     return () => { live = false; };
@@ -297,43 +351,41 @@ function Executors({ role, rows, dense, others }: { role: ResolvedRole; rows: { 
   const finished = executorTree(rootId, rows.rows, true).length - executorTree(rootId, rows.rows, false).length;
   const byId = new Map(all.map((r) => [r.id, r]));
   const groupLabel = (text: string) => (
-    <li className="pt-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/80" style={{ paddingLeft: dense ? 26 : 32 }}>{text}</li>
+    <li className="pt-1 text-[11px] text-muted-foreground/80" style={{ paddingLeft: dense ? 36 : 40 }}>{text}</li>
   );
   return (
     <ul data-agent-roster-executors="" className="flex flex-col">
-      {groupLabel("Под управлением")}
+      {groupLabel("под управлением")}
       {nodes.map((n) => (
-        <li key={n.row.id} data-executor={n.row.id} data-depth={n.depth} data-state={n.state} className="flex items-center">
-          <button type="button" title={`${(byId.get(n.row.id) as Row | undefined)?.title ?? n.row.id} — ${STATE_LABEL[n.state]}${n.row.isArchived ? " (архив)" : ""}`}
-            onClick={() => navigate.toThread(n.row.id)}
-            className={cn("flex min-w-0 flex-1 items-center gap-1.5 rounded-md text-left text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground", dense ? "h-6" : "h-8")}
-            style={{ paddingLeft: `${(dense ? 30 : 36) + (n.depth - 1) * 14}px`, paddingRight: 8 }}>
-            <span className={cn("min-w-0 flex-1 truncate", n.row.isArchived && "line-through opacity-70")}>{(byId.get(n.row.id) as Row | undefined)?.title ?? n.row.id}</span>
-            {n.hiddenBelow > 0 ? <span className="shrink-0 text-[11px]">ещё {n.hiddenBelow}</span> : null}
-            <StateMark state={n.state} />
-          </button>
+        <li key={n.row.id} data-executor={n.row.id} data-depth={n.depth} data-state={n.state} data-active={n.row.id === currentThreadId ? "" : undefined}
+          title={`${(byId.get(n.row.id) as Row | undefined)?.title ?? n.row.id} — ${STATE_LABEL[n.state]}${n.row.isArchived ? " (архив)" : ""}`}
+          className={cn("relative flex items-center gap-1.5 rounded-md text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground", dense ? "h-6" : "h-8", n.row.id === currentThreadId && "bg-sidebar-accent text-sidebar-foreground")}
+          style={{ paddingLeft: `${(dense ? 36 : 40) + (n.depth - 1) * 14}px`, paddingRight: 8 }}>
+          <ThreadLink threadId={n.row.id} href={(byId.get(n.row.id) as Row | undefined)?.href ?? null} label={`Открыть ${(byId.get(n.row.id) as Row | undefined)?.title ?? n.row.id}`} />
+          <span className={cn("pointer-events-none min-w-0 flex-1 truncate", n.row.isArchived && "line-through opacity-70")}>{(byId.get(n.row.id) as Row | undefined)?.title ?? n.row.id}</span>
+          {n.hiddenBelow > 0 ? <span className="pointer-events-none shrink-0 text-[11px]">ещё {n.hiddenBelow}</span> : null}
+          <span className="pointer-events-none flex"><StateMark state={n.state} /></span>
         </li>
       ))}
-      {nodes.length === 0 && finished === 0 && !showFinished ? (
-        <li className="py-0.5 text-[12px] text-muted-foreground" style={{ paddingLeft: dense ? 30 : 36 }}>исполнителей нет</li>
+      {nodes.length === 0 ? (
+        <li className="truncate py-0.5 text-[12px] text-muted-foreground/80" style={{ paddingLeft: dense ? 36 : 40 }}>{showFinished ? "исполнителей нет" : "сейчас никто не работает"}</li>
       ) : null}
       <li>
-        <button type="button" data-agent-roster-show-finished="" className="py-0.5 text-[11px] text-muted-foreground underline-offset-2 hover:underline" style={{ paddingLeft: dense ? 30 : 36 }}
+        <button type="button" data-agent-roster-show-finished="" className="block w-full truncate py-0.5 text-left text-[11px] text-muted-foreground/80 underline-offset-2 hover:underline" style={{ paddingLeft: dense ? 36 : 40 }}
           onClick={() => setShowFinished((v) => !v)}>
-          {showFinished ? "скрыть завершённые и архивные" : `показать завершённые и архивные${finished > 0 ? ` (${finished}+)` : ""}`}
+          {showFinished ? "скрыть завершённые" : `завершённые и архивные${finished > 0 ? ` (${finished}+)` : ""}`}
         </button>
       </li>
       {others.length > 0 ? (
         <>
-          {groupLabel("Не под управлением")}
+          {groupLabel("не под управлением")}
           {others.map((id) => (
-            <li key={id} data-unmanaged={id} className="flex items-center">
-              <button type="button" title={`${rows.byId.get(id)?.title ?? id} — работает, не под управлением роли`} onClick={() => navigate.toThread(id)}
-                className={cn("flex min-w-0 flex-1 items-center gap-1.5 rounded-md text-left text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground", dense ? "h-6" : "h-8")}
-                style={{ paddingLeft: dense ? 30 : 36, paddingRight: 8 }}>
-                <span className="min-w-0 flex-1 truncate">{rows.byId.get(id)?.title ?? id}</span>
-                <StateMark state="running" />
-              </button>
+            <li key={id} data-unmanaged={id} data-active={id === currentThreadId ? "" : undefined} title={`${rows.byId.get(id)?.title ?? id} — работает, не под управлением роли`}
+              className={cn("relative flex items-center gap-1.5 rounded-md text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground", dense ? "h-6" : "h-8", id === currentThreadId && "bg-sidebar-accent text-sidebar-foreground")}
+              style={{ paddingLeft: dense ? 36 : 40, paddingRight: 8 }}>
+              <ThreadLink threadId={id} href={rows.byId.get(id)?.href ?? null} label={`Открыть ${rows.byId.get(id)?.title ?? id}`} />
+              <span className="pointer-events-none min-w-0 flex-1 truncate">{rows.byId.get(id)?.title ?? id}</span>
+              <span className="pointer-events-none flex"><StateMark state="running" /></span>
             </li>
           ))}
         </>
@@ -342,77 +394,205 @@ function Executors({ role, rows, dense, others }: { role: ResolvedRole; rows: { 
   );
 }
 
+/** Close the phone sidebar drawer after opening a thread, the way bb's own rows do (its Escape close). */
+function closeMobileDrawer(from: Element | null) {
+  const drawer = from?.closest('[role="dialog"][data-state="open"]');
+  if (!drawer) return;
+  const esc = new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true });
+  (drawer as HTMLElement).dispatchEvent(esc);
+}
+
+/**
+ * A link that behaves like bb's thread row: plain click opens the thread in the
+ * main view, Cmd/Ctrl-click opens a split, dragging uses bb's split gesture,
+ * middle click and "open in new tab" use the real href; on a phone the sidebar
+ * drawer closes.
+ */
+function ThreadLink({ threadId, href, label, className }: { threadId: string; href: string | null; label: string; className?: string }) {
+  const navigate = useBbNavigate();
+  const split = experimental_useSidebarThreadSplit(threadId);
+  return (
+    <a href={href ?? undefined} draggable={false} aria-label={label} data-agent-roster-link={threadId}
+      {...split.splitProps}
+      className={cn("absolute inset-0 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring", className)}
+      onClick={(event) => {
+        if (event.button !== 0 || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        if ((event.metaKey || event.ctrlKey) && split.isAvailable) { navigate.toThread(threadId, { split: true }); return; }
+        navigate.toThread(threadId);
+        closeMobileDrawer(event.currentTarget);
+      }} />
+  );
+}
+
 function RoleRow({ node, rows, activity, dense }: RowProps) {
   const { role } = node;
-  const open = useOpenRole();
   const navigate = useBbNavigate();
+  const { threadId: currentThreadId } = useBbContext();
   const isOpen = useExpanded(role.id);
-  const [menu, setMenu] = useState(false);
   const [writing, setWriting] = useState(false);
   const allRoles = useRoles() ?? [];
   const summary = summarize(role.active, rows.rows, rows.byId);
   const work = projectWork(role, role.active, rows.rows, allRoles);
-  const workLabel = `в проекте работают: под управлением ${work.own.length}, не под управлением ${work.others.length}`;
   const anyWork = work.own.length + work.others.length > 0;
-  // Work in the project shows as a spinner even while the role itself waits ("ждёт тебя" stays as a pill).
   const quietWithWork = anyWork && (summary.state === "idle" || summary.state === "waiting");
+  const workLabel = `работают: свои ${work.own.length}, чужие ${work.others.length}`;
   const label = quietWithWork ? `${summaryLabel(summary)}; ${workLabel}` : summaryLabel(summary);
-  const title = [
-    `${role.name} — ${KIND_LABEL[role.kind]}`,
-    role.responsibility,
-    `Подчиняется: ${role.parentName ?? "владельцу"}`,
-    `Состояние: ${label}`,
-    summary.total ? `Исполнителей: ${summary.total}${summary.errors ? `, с ошибкой: ${summary.errors}` : ""}` : "",
-  ].filter(Boolean).join("\n");
-  const pad = dense ? 4 : 8;
+  const short = `${role.name} — ${KIND_LABEL[role.kind]}; ${label}`;
+  const threadId = role.active.kind === "thread" ? role.active.threadId : null;
+  const canExpand = threadId !== null;
+  const active = threadId !== null && threadId === currentThreadId;
+  const second = activity ?? (role.active.kind === "external" ? "в другом BB — откроется ссылка" : summaryLabel(summary));
+  const leftPad = dense ? 12 : 16;
+  const projectName = useProjectName(role, rows);
+  const projectId = useProjectId(role, rows);
+  const projectLogo = useProjectLogo(projectId);
   return (
-    <li data-agent-roster-role={role.id} data-state={summary.state} className="relative">
-      <div className="group/role flex items-center">
-        <button type="button" aria-label={isOpen ? `Свернуть ${role.name}` : `Раскрыть ${role.name}`} aria-expanded={isOpen}
-          data-agent-roster-toggle=""
-          className={cn("flex size-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-sidebar-foreground", role.active.kind !== "thread" && "invisible")}
-          style={{ marginLeft: pad }}
-          onClick={() => toggleExpanded(role.id)}>
-          <svg viewBox="0 0 24 24" className={cn("size-3 transition-transform", isOpen && "rotate-90")} fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
-        </button>
-        <button type="button" title={title} onClick={() => open(role)}
-          className={cn("flex min-w-0 flex-1 flex-col justify-center rounded-md pl-1 pr-1 text-left hover:bg-sidebar-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring", dense ? "min-h-7 py-0.5" : "min-h-9 py-1")}>
-          <span className="flex w-full min-w-0 items-center gap-1.5 text-sm">
-            <RoleIcon role={role} />
-            <span className="min-w-0 flex-1 truncate">{role.name}</span>
-            {summary.total > 0 && !anyWork ? (
-              <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground" aria-label={`исполнителей ${summary.total}`}>↳{summary.total}</span>
-            ) : null}
-            {summary.errors > 0 ? <span className="shrink-0 text-[11px] tabular-nums text-red-500" aria-label={`с ошибкой ${summary.errors}`}>⊗{summary.errors}</span> : null}
-            {work.own.length + work.others.length > 0 ? (
-              <span data-agent-roster-work="" title={workLabel} aria-label={workLabel} className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
-                {work.own.length} · {work.others.length}
+    <li data-agent-roster-role={role.id} data-state={summary.state} data-active={active ? "" : undefined}>
+      <HoverCard openDelay={900} closeDelay={120}>
+        <HoverCardTrigger asChild>
+          <div data-agent-roster-line="" title={short}
+            className={cn("group/role relative flex flex-col justify-center rounded-md py-1 pr-1 hover:bg-sidebar-accent", active && "bg-sidebar-accent")}
+            style={{ paddingLeft: leftPad }}>
+            {threadId ? (
+              <ThreadLink threadId={threadId} href={rows.byId.get(threadId)?.href ?? null} label={`Открыть ${role.name}`} />
+            ) : (
+              <button type="button" aria-label={`Открыть ${role.name}`} className="absolute inset-0 rounded-md"
+                onClick={(e) => { if (role.active.kind === "external") navigate.openUrl(role.active.url); else openDialog({ mode: "edit", roleId: role.id }); closeMobileDrawer(e.currentTarget); }} />
+            )}
+            <span data-agent-roster-name-line="" className="pointer-events-none relative flex h-5 min-w-0 items-center gap-2 text-sm">
+              <RoleIcon role={role} logo={projectLogo} />
+              <span data-agent-roster-title="" className="flex min-w-0 flex-1 items-baseline">
+                <span className={cn("max-w-full shrink-0 truncate", active && "font-medium")}>{role.name}</span>
+                {projectName ? <span data-agent-roster-project="" className="ml-1 min-w-0 truncate text-muted-foreground">— {projectName}</span> : null}
               </span>
-            ) : null}
-            {(role.channels ?? []).map((c) => <ChannelMark key={c.kind} label={c.label} />)}
-            <StateMark state={quietWithWork ? "executors" : summary.state} label={label} />
-            {!dense ? <span className="hidden w-40 shrink-0 truncate text-xs text-muted-foreground sm:inline">{label}</span> : null}
-          </span>
-          {!dense ? <span data-agent-roster-parent="" className="block w-full truncate pl-[22px] text-[11px] text-muted-foreground">{KIND_LABEL[role.kind]} · подчиняется: {role.parentName ?? "владельцу"}</span> : null}
-          {activity ? <span data-agent-roster-activity="" className="block w-full truncate pl-[22px] text-[11px] text-muted-foreground">{activity}</span> : null}
-        </button>
-        {summary.waitingThreadId ? (
-          <button type="button" data-agent-roster-waiting="" title="Ждёт тебя: открыть тред, который ждёт твоего ответа" aria-label="Ждёт тебя: открыть ждущий тред"
-            className="mr-0.5 shrink-0 rounded-full bg-amber-500/15 px-1.5 text-[11px] font-medium text-amber-600 hover:bg-amber-500/25"
-            onClick={() => navigate.toThread(summary.waitingThreadId!)}>
-            ждёт
-          </button>
-        ) : null}
-        <button type="button" aria-label={`Действия: ${role.name}`} aria-haspopup="menu" data-agent-roster-menu-button=""
-          className={cn("size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent", dense && !menu ? "hidden group-hover/role:flex group-focus-within/role:flex" : "flex")}
-          onClick={() => setMenu((v) => !v)}>
-          <svg viewBox="0 0 24 24" className="size-3.5" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
-        </button>
-      </div>
-      {menu ? <RecordMenu role={role} onClose={() => setMenu(false)} onWrite={() => setWriting(true)} /> : null}
+              <Counter own={work.own.length} others={work.others.length} total={summary.total} />
+              {summary.errors > 0 ? <span className="shrink-0 text-[11px] tabular-nums text-red-500" aria-label={`с ошибкой ${summary.errors}`}>⊗{summary.errors}</span> : null}
+              {summary.waitingThreadId ? (
+                <button type="button" data-agent-roster-waiting="" title="Ждёт тебя: открыть тред, который ждёт твоего ответа" aria-label="Ждёт тебя: открыть ждущий тред"
+                  className="pointer-events-auto relative z-10 shrink-0 rounded-full bg-amber-500/15 px-1.5 text-[11px] font-medium leading-4 text-amber-600 hover:bg-amber-500/25"
+                  onClick={(e) => { navigate.toThread(summary.waitingThreadId!); closeMobileDrawer(e.currentTarget); }}>
+                  ждёт
+                </button>
+              ) : null}
+              {(role.channels ?? []).map((c) => <ChannelMark key={c.kind} label={c.label} />)}
+              <StateMark state={summary.state} label={label} />
+              <button type="button" data-agent-roster-toggle="" aria-label={isOpen ? `Свернуть ${role.name}` : `Раскрыть ${role.name}`} aria-expanded={isOpen}
+                disabled={!canExpand}
+                className="pointer-events-auto relative z-10 flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-sidebar-foreground disabled:opacity-30"
+                onClick={() => toggleExpanded(role.id)}>
+                <svg viewBox="0 0 24 24" className={cn("size-3.5 transition-transform", isOpen && "rotate-90")} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+              </button>
+              {projectId && revealSupported() ? (
+                <button type="button" data-agent-roster-reveal="" aria-label={`Перейти к проекту${projectName ? ` ${projectName}` : ""}`} title="Перейти к проекту в списке"
+                  className="pointer-events-auto relative z-10 hidden size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-sidebar-foreground group-hover/role:flex"
+                  onClick={() => { if (!revealProject(projectId)) navigate.toProject(projectId); }}>
+                  <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 7h6l2 2h10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><path d="M12 13h6M15 10l3 3-3 3" /></svg>
+                </button>
+              ) : null}
+              <span className="pointer-events-auto relative z-10 flex"><RecordMenu role={role} dense={dense} projectId={projectId} onWrite={() => setWriting(true)} /></span>
+            </span>
+            <button type="button" data-agent-roster-status="" disabled={!canExpand} aria-label={`${second}. ${isOpen ? "Свернуть" : "Раскрыть"} исполнителей`}
+              className="relative z-10 block h-4 w-full min-w-0 truncate pr-12 text-left text-[11px] leading-4 text-muted-foreground disabled:cursor-default"
+              style={{ paddingLeft: 24 }}
+              onClick={() => toggleExpanded(role.id)}>
+              {second}
+            </button>
+          </div>
+        </HoverCardTrigger>
+        <HoverCardContent side="right" align="start" className="w-80 p-3" data-agent-roster-card-popup="">
+          <RoleCard role={role} rows={rows} />
+        </HoverCardContent>
+      </HoverCard>
       {writing ? <QuickMessage role={role} onDone={() => setWriting(false)} /> : null}
       {isOpen ? <Executors role={role} rows={rows} dense={dense} others={work.others} /> : null}
     </li>
+  );
+}
+
+function useProjectId(role: ResolvedRole, rows: { byId: Map<string, Row> }): string | null {
+  const threadId = role.active.kind === "thread" ? role.active.threadId : null;
+  return role.projectId ?? (threadId ? rows.byId.get(threadId)?.projectId ?? null : null);
+}
+
+/** Project logos, fetched once per set of projects and shared by every row. */
+let logoCache: Record<string, string | null> = {};
+const logoListeners = new Set<() => void>();
+const logoAsked = new Set<string>();
+function useProjectLogo(projectId: string | null): string | null {
+  const rpc = useRpc<typeof rpcContract>();
+  const value = useSyncExternalStore(
+    (fn) => { logoListeners.add(fn); return () => logoListeners.delete(fn); },
+    () => (projectId ? logoCache[projectId] ?? null : null),
+    () => null,
+  );
+  useEffect(() => {
+    if (!projectId || logoAsked.has(projectId)) return;
+    logoAsked.add(projectId);
+    Promise.resolve().then(() => rpc.call("roster_project_icons", { projectIds: [projectId] })).then((r) => {
+      logoCache = { ...logoCache, ...r };
+      for (const fn of [...logoListeners]) fn();
+    }, () => undefined);
+  }, [rpc, projectId]);
+  return value;
+}
+
+/** The role's project name as bb lists it: the role's project, else its active thread's. */
+function useProjectName(role: ResolvedRole, rows: { byId: Map<string, Row> }): string | null {
+  const { projects } = experimental_useSidebarThreads();
+  const threadId = role.active.kind === "thread" ? role.active.threadId : null;
+  const projectId = role.projectId ?? (threadId ? rows.byId.get(threadId)?.projectId ?? null : null);
+  if (!projectId) return null;
+  return (projects ?? []).find((p) => p.id === projectId)?.name ?? null;
+}
+
+/** One counter style, like bb's "↳N": own · others while work runs, else the muted total. */
+function Counter({ own, others, total }: { own: number; others: number; total: number }) {
+  if (own + others > 0) {
+    const text = own === 0 ? `· ${others}` : others > 0 ? `↳${own} · ${others}` : `↳${own}`;
+    const aria = own === 0 ? `не под управлением работают: ${others}` : `работают: свои ${own}${others > 0 ? `, чужие ${others}` : ""}`;
+    return <span data-agent-roster-work="" title={aria} aria-label={aria} className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{text}</span>;
+  }
+  if (total > 0) return <span data-agent-roster-total="" aria-label={`исполнителей ${total}`} className="shrink-0 text-[11px] tabular-nums text-muted-foreground/70">↳{total}</span>;
+  return null;
+}
+
+/** Details of a record: the long-hover card and the "Сведения" dialog show the same. */
+function RoleCard({ role, rows }: { role: ResolvedRole; rows: { rows: Row[]; byId: Map<string, Row> } }) {
+  const rpc = useRpc<typeof rpcContract>();
+  const { projects } = experimental_useSidebarThreads();
+  const allRoles = useRoles() ?? [];
+  const [details, setDetails] = useState<{ activity: string | null; model: string | null; providerId: string | null; lastActiveAt: number | null } | null>(null);
+  const threadId = role.active.kind === "thread" ? role.active.threadId : null;
+  useEffect(() => {
+    if (!threadId) return;
+    let live = true;
+    rpc.call("roster_details", { threadId }).then((d) => { if (live) setDetails(d); }, () => undefined);
+    return () => { live = false; };
+  }, [rpc, threadId]);
+  const summary = summarize(role.active, rows.rows, rows.byId);
+  const work = projectWork(role, role.active, rows.rows, allRoles);
+  const projectId = role.projectId ?? (threadId ? rows.byId.get(threadId)?.projectId ?? null : null);
+  const project = (projects ?? []).find((p) => p.id === projectId)?.name ?? projectId;
+  const waitingTitle = summary.waitingThreadId ? rows.byId.get(summary.waitingThreadId)?.title ?? summary.waitingThreadId : null;
+  const fact = (label: string, value: ReactNode) => (value ? <div className="flex gap-2"><dt className="w-24 shrink-0 text-muted-foreground">{label}</dt><dd className="min-w-0 flex-1 break-words">{value}</dd></div> : null);
+  const when = details?.lastActiveAt ? new Date(details.lastActiveAt).toLocaleString() : null;
+  return (
+    <div data-agent-roster-card="" className="flex flex-col gap-2 text-xs">
+      <div className="flex items-center gap-2 text-sm font-medium"><RoleIcon role={role} /><span className="truncate">{role.name}</span><span className="text-xs font-normal text-muted-foreground">{KIND_LABEL[role.kind]}{role.primary ? " · главная" : ""}</span></div>
+      <dl className="flex flex-col gap-1">
+        {fact("Отвечает за", role.responsibility)}
+        {fact("Подчиняется", role.parentName ?? "владельцу")}
+        {fact("Проект", project)}
+        {fact("Тред", threadId ? rows.byId.get(threadId)?.title ?? threadId : role.active.kind === "external" ? role.active.url : "нет действующего")}
+        {fact("Сейчас", details?.activity ?? null)}
+        {fact("Исполнители", `свои работают ${work.own.length}, чужие ${work.others.length}; всего под ролью ${summary.total}${summary.errors ? `, с ошибкой ${summary.errors}` : ""}`)}
+        {fact("Ждёт тебя", waitingTitle)}
+        {fact("Каналы", (role.channels ?? []).length ? <span className="flex flex-col gap-0.5">{(role.channels ?? []).map((c) => <span key={c.kind} className="flex items-center gap-1"><ChannelMark label={c.label} />{c.label}</span>)}</span> : null)}
+        {fact("Модель", [details?.providerId, details?.model].filter(Boolean).join(" · ") || null)}
+        {fact("Активность", when)}
+      </dl>
+    </div>
   );
 }
 
@@ -515,6 +695,7 @@ interface Draft {
   threadIds: string;
   bridgeTopicId: string;
   url: string;
+  primary: boolean;
 }
 
 function draftFor(request: DialogRequest, roles: ResolvedRole[]): Draft | null {
@@ -522,6 +703,7 @@ function draftFor(request: DialogRequest, roles: ResolvedRole[]): Draft | null {
     return {
       name: "", kind: request.kind, responsibility: "", icon: "", parentId: "", projectId: request.projectId,
       bindMode: "pinned", threadId: request.threadId ?? "", threadIds: "", bridgeTopicId: "", url: "",
+      primary: false,
     };
   }
   if (request.mode === "move") return null;
@@ -535,6 +717,7 @@ function draftFor(request: DialogRequest, roles: ResolvedRole[]): Draft | null {
     threadIds: b.mode === "group" ? b.threadIds.join(", ") : "",
     bridgeTopicId: b.mode === "group" && b.bridgeTopicId !== null ? String(b.bridgeTopicId) : "",
     url: b.mode === "external" ? b.url : "",
+    primary: role.primary,
   };
 }
 
@@ -600,6 +783,7 @@ export function RoleDialog() {
         parentId: draft.parentId || null,
         projectId: draft.projectId,
         binding: bindingOf(draft),
+        primary: draft.primary,
       });
       await refresh(rpc);
       close();
@@ -652,9 +836,13 @@ export function RoleDialog() {
                 </select>
               </Field>
             </div>
-            <details data-agent-roster-more="" open={draft.parentId !== "" ? true : undefined} className="text-sm">
+            <details data-agent-roster-more="" open={draft.parentId !== "" || draft.primary ? true : undefined} className="text-sm">
               <summary className="cursor-pointer select-none text-xs text-muted-foreground">Дополнительно</summary>
-              <div className="mt-2">
+              <div className="mt-2 flex flex-col gap-3">
+                <label className="flex items-start gap-2 text-sm" data-agent-roster-primary="">
+                  <input type="checkbox" className="mt-0.5" checked={draft.primary} onChange={(e) => patch({ primary: e.target.checked })} />
+                  <span>Главная запись<span className="block text-xs text-muted-foreground">Золотая корона. Главной может быть только одна запись: отметка снимется с прежней.</span></span>
+                </label>
                 <Field label="Кому подчиняется (по умолчанию — владельцу)">
                   <select className={selectClass} value={draft.parentId} onChange={(e) => patch({ parentId: e.target.value })}>
                     <option value="">владельцу</option>
@@ -776,6 +964,7 @@ export function RosterOverlay() {
       {host ? createPortal(<SidebarBlock />, host) : null}
       <RoleDialog />
       <MoveDialog />
+      <DetailsDialog />
     </>
   );
 }
@@ -787,6 +976,24 @@ function useBadge() {
   if (!roles) return null;
   const waiting = roles.filter((r) => summarize(r.active, rows.rows, rows.byId).state === "waiting").length;
   return waiting > 0 ? { count: waiting, tone: "warning" as const, label: `ждут владельца: ${waiting}` } : null;
+}
+
+/**
+ * The one role mark on a thread row: a small monochrome glyph on the row's
+ * metadata line after the title, beside bb's own "↳N". Nothing before the title,
+ * nothing in place of bb's state glyph. Machine Tabs always shows this line; bb's
+ * own list shows it with Rows → Metadata on (otherwise the role is seen in the block).
+ */
+function RoleMark({ thread, data }: ExperimentalThreadRowMetadataProps<ResolvedRole[] | null>) {
+  const mark = data ? rowMarkFor(data, thread.id) : null;
+  if (!mark) return null;
+  return (
+    <span data-agent-roster-mark="" data-tone={mark.tone} data-reserve={mark.reserve ? "" : undefined} role="img" aria-label={mark.label} title={mark.label}
+      className={cn("inline-flex items-center", mark.tone === "neutral" && "text-muted-foreground", mark.reserve && "opacity-45")}
+      style={mark.tone === "accent" ? { color: GOLD } : undefined}>
+      <Icon name={mark.glyph === "link" ? "agent-roster/external" : "agent-roster/crown"} className="size-3" />
+    </span>
+  );
 }
 
 function useActionData() {
@@ -803,9 +1010,7 @@ export default definePluginApp((app) => {
       host.setAttribute(HOST_ATTR, "");
       host.dataset.bbPlugin = "agent-roster";
       const stopPlacing = keepPlaced(host, signal, (placed) => setState({ host: placed ? host : null }));
-      const stopMarks = mountRowMarks(() => getState().roles, subscribe);
       return () => {
-        stopMarks();
         stopPlacing();
         setState({ host: null });
       };
@@ -821,6 +1026,13 @@ export default definePluginApp((app) => {
     path: PANEL_PATH,
     component: RosterPage,
     experimental_useBadge: useBadge,
+  });
+
+  app.slots.experimental_threadRowMetadata<ResolvedRole[] | null>({
+    id: "role-mark",
+    order: 1,
+    useData: useRoles,
+    component: RoleMark,
   });
 
   app.slots.experimental_threadAction({

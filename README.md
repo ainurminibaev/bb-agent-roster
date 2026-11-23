@@ -21,6 +21,12 @@ name, icon and place in the hierarchy stay.
 - **Page** «Агенты» in the navigation: the same tree, adding, editing every field,
   removing a role; the badge counts roles waiting for the owner.
 - **Thread menu**: «Сделать оркестратором…», «Изменить роль…», «Снять роль».
+- **One role mark — the crown** for agents and orchestrators (an external employee
+  keeps a link glyph); the kind is text in the tooltip, card and settings. One
+  record may be **main** (`--primary on`, or the record dialog): its crown is the
+  plugin's only colour, a calm gold; marking another record main clears the old one.
+  A role with several threads: the active one gets the crown, the others the same
+  crown muted ("резервный тред роли").
 - **Role mark on thread rows**: one small mark before the row title (next to the
   project icon), drawn by a stylesheet; bb's own state glyph on the right (running,
   unread, error, waiting) is never replaced. Works in bb's list and Machine Tabs.
@@ -65,6 +71,7 @@ Commands: [skills/agent-roster/SKILL.md](skills/agent-roster/SKILL.md).
       "responsibility": "website",
       "reportsTo": null,
       "reportsToName": null,
+      "primary": false,
       "projectId": "proj_…",
       "activeThreadId": "thr_…",
       "url": null
@@ -73,7 +80,7 @@ Commands: [skills/agent-roster/SKILL.md](skills/agent-roster/SKILL.md).
 }
 ```
 
-- `kind`: `agent` | `orchestrator` | `external`.
+- `kind`: `agent` | `orchestrator` | `external`. `primary` (added in 0.2.1): the one main record.
 - `reportsTo`: role id, `null` = the owner. `activeThreadId`: `null` when the role has
   no active thread here (archived, deleted, none bound, or external). `url`: the link
   of an external employee, otherwise `null`.
@@ -102,6 +109,19 @@ Requires bb ≥ 0.50 (Plugin SDK ≥ 0.6.157).
   (bb's own list: the block goes first) and the first `[data-machine-tabs-list]`
   inside it (Machine Tabs: after its search, above "Last N"). Covered by
   `tests/app.test.tsx`.
+- Project logo of an orchestrator (drawn monochrome, kind as a corner mark):
+  `.bb/icon.svg` or `.bb/icon.png` of the project's folder read through bb's
+  `files.read` (project sources from `projects.get`); fallback, read-only, the
+  `project_icons` RPC of Machine Tabs (0.2.x, `{ icons: { [projectId]: data-URL } }`).
+  No file, no plugin or another format → the kind icon, no error.
+- "Перейти к проекту": the plugin's own small scroll to bb's
+  `[data-sidebar-project-id]` section with a short accent flash (neither Machine
+  Tabs nor Project Catalog exposes an entry for this). Section not in the current
+  view → `navigate.toProject`. Attribute gone after a bb update → no button.
+- Opening a record works like bb's thread row: a link with the thread's href,
+  Cmd/Ctrl-click → split, drag → bb's split gesture
+  (`experimental_useSidebarThreadSplit`); on a phone the sidebar drawer is closed
+  with its own Escape close (the SDK has no "close drawer" outside the thread list).
 - Does not change any other plugin.
 
 ## Develop

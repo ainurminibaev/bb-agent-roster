@@ -20,10 +20,14 @@ export const KIND_LABEL: Record<RoleKind, string> = {
   external: "внешний сотрудник",
 };
 
-/** Default mark per kind; a role may set its own short icon (emoji). */
+/**
+ * The role mark per kind. The crown is THE role mark for agents and
+ * orchestrators alike (the kind is text: tooltip, card, settings); an external
+ * employee keeps the link glyph. A role may set its own short icon (emoji).
+ */
 export const KIND_ICON: Record<RoleKind, string> = {
   orchestrator: "agent-roster/crown",
-  agent: "agent-roster/agent",
+  agent: "agent-roster/crown",
   external: "agent-roster/external",
 };
 
@@ -48,6 +52,8 @@ export interface Role {
   parentId: string | null;
   projectId: string | null;
   binding: Binding;
+  /** The one "main" record (the owner's assistant): its crown is gold. At most one. */
+  primary: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -128,12 +134,24 @@ export function parseRoster(raw: unknown): Roster {
       parentId: typeof r.parentId === "string" ? r.parentId : null,
       projectId: typeof r.projectId === "string" && r.projectId ? r.projectId.slice(0, 64) : null,
       binding: parseBinding(r.binding, kind),
+      primary: r.primary === true,
       createdAt: num(r.createdAt, 0),
       updatedAt: num(r.updatedAt, 0),
     });
     if (roles.length >= LIMITS.roles) break;
   }
+  // At most one main record: the first one marked keeps it.
+  let seenPrimary = false;
+  for (const role of roles) {
+    if (role.primary && seenPrimary) role.primary = false;
+    if (role.primary) seenPrimary = true;
+  }
   return { version: 1, roles: fixParents(roles) };
+}
+
+/** Marks one record as main and clears it everywhere else. */
+export function setPrimary<R extends Role>(roles: readonly R[], roleId: string | null): R[] {
+  return roles.map((r) => ({ ...r, primary: roleId !== null && r.id === roleId }));
 }
 
 /** A parent must exist and must not lead back to the role itself. */
@@ -644,6 +662,8 @@ export interface ListedRole {
   responsibility: string;
   /** Role id it reports to; null = the owner. */
   reportsTo: string | null;
+  /** The one main record (added in 0.2.1). */
+  primary: boolean;
   reportsToName: string | null;
   projectId: string | null;
   /** The active thread to write to with `bb thread tell`; null when there is none here. */
@@ -668,10 +688,27 @@ export function listJson(roles: readonly ResolvedRole[]): ListedRoster {
       kind: r.kind,
       responsibility: r.responsibility,
       reportsTo: r.parentId,
+      primary: r.primary,
       reportsToName: r.parentName,
       projectId: r.projectId,
       activeThreadId: r.active.kind === "thread" ? r.active.threadId : null,
       url: r.active.kind === "external" ? r.active.url : r.binding.mode === "external" ? r.binding.url || null : null,
     })),
   };
+}
+
+/** Which mark a thread row gets: the role's crown, gold for the main record, muted on a reserve thread. */
+export interface RowMark {
+  roleId: string;
+  glyph: "crown" | "link";
+  tone: "neutral" | "accent";
+  reserve: boolean;
+  label: string;
+}
+export function rowMarkFor(roles: readonly ResolvedRole[], threadId: string): RowMark | null {
+  const role = rolesForThread(roles, threadId)[0];
+  if (!role) return null;
+  const reserve = role.binding.mode === "group" && !(role.active.kind === "thread" && role.active.threadId === threadId);
+  const label = `${role.name} — ${KIND_LABEL[role.kind]}${role.primary ? ", главная" : ""}${reserve ? "; резервный тред роли" : ""}`;
+  return { roleId: role.id, glyph: role.kind === "external" ? "link" : "crown", tone: role.primary ? "accent" : "neutral", reserve, label };
 }

@@ -21,7 +21,7 @@ import {
 function role(p: Partial<Role> & { id: string }): Role {
   return {
     name: p.id, kind: "agent", responsibility: "", icon: "", parentId: null, projectId: null,
-    binding: { mode: "pinned", threadId: null }, createdAt: 0, updatedAt: 0, ...p,
+    binding: { mode: "pinned", threadId: null }, primary: false, createdAt: 0, updatedAt: 0, ...p,
   };
 }
 function facts(list: ThreadFact[]): Map<string, ThreadFact> {
@@ -174,15 +174,6 @@ describe("text for agents", () => {
   });
 });
 
-import { cssString, markCss } from "../lib/row-marks";
-describe("row marks", () => {
-  it("escapes names and icons as CSS strings and skips bad thread ids", () => {
-    expect(cssString('a"}')).toBe('"\\61 \\22 \\7d "');
-    const css = markCss([role({ id: "x", name: '"}body{x', icon: "🧭", binding: { mode: "group", threadIds: ["thr_1", "thr_2"], bridgeTopicId: null } })]);
-    expect(css.split("\n")).toHaveLength(2);
-    expect(css).not.toContain('"}body');
-  });
-});
 
 import { activityLine, executorTree, summarize, summaryLabel } from "../model";
 describe("0.2: summary and executors", () => {
@@ -247,5 +238,31 @@ describe("0.2: project work and channels", () => {
     expect(channelsFor(pinned, { kind: "thread", threadId: "thr_9", reason: "pinned" }, parseBridgeStatus({ chatBindings: [{ topicId: 12, threadId: "thr_9" }] }))).toEqual([{ kind: "telegram", label: "Telegram: тема 12" }]);
     expect(channelsFor(pinned, { kind: "none" }, parseBridgeStatus(undefined))).toEqual([]);
     expect(parseBridgeStatus({ bot: "<script>", chatBindings: [{ topicId: -1 }] })).toEqual({ bot: null, bindings: [] });
+  });
+});
+
+import { rowMarkFor, setPrimary } from "../model";
+describe("0.2.1: one role mark — the crown; one main record", () => {
+  const res = (p: Partial<Role> & { id: string }, active: ActiveTargetLike) => ({ ...role(p), active, parentName: null }) as unknown as ResolvedRole;
+  type ActiveTargetLike = { kind: "thread"; threadId: string; reason: "pinned" } | { kind: "none" } | { kind: "external"; url: string };
+  it("agent and orchestrator both get the crown; external gets the link; gold only for the main record", () => {
+    const roles = [
+      res({ id: "a", kind: "agent", primary: true, binding: { mode: "pinned", threadId: "thr_a" } }, { kind: "thread", threadId: "thr_a", reason: "pinned" }),
+      res({ id: "o", kind: "orchestrator", binding: { mode: "pinned", threadId: "thr_o" } }, { kind: "thread", threadId: "thr_o", reason: "pinned" }),
+    ];
+    expect(rowMarkFor(roles, "thr_a")).toMatchObject({ glyph: "crown", tone: "accent", reserve: false });
+    expect(rowMarkFor(roles, "thr_o")).toMatchObject({ glyph: "crown", tone: "neutral" });
+    expect(rowMarkFor(roles, "thr_none")).toBeNull();
+  });
+  it("a pair: the active thread gets the crown, the other the same crown muted as a reserve thread", () => {
+    const pair = [res({ id: "p", kind: "agent", binding: { mode: "group", threadIds: ["thr_1", "thr_2"], bridgeTopicId: 0 } }, { kind: "thread", threadId: "thr_1", reason: "pinned" })];
+    expect(rowMarkFor(pair, "thr_1")).toMatchObject({ reserve: false });
+    expect(rowMarkFor(pair, "thr_2")).toMatchObject({ reserve: true, glyph: "crown" });
+    expect(rowMarkFor(pair, "thr_2")!.label).toContain("резервный тред роли");
+  });
+  it("at most one main record: stored data keeps the first; setPrimary moves it", () => {
+    const parsed = parseRoster({ roles: [{ id: "a", name: "A", primary: true }, { id: "b", name: "B", primary: true }] });
+    expect(parsed.roles.map((r) => r.primary)).toEqual([true, false]);
+    expect(setPrimary(parsed.roles, "b").map((r) => r.primary)).toEqual([false, true]);
   });
 });

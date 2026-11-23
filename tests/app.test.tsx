@@ -12,7 +12,7 @@ const app = await loadPluginApp(() => import("../app"));
 function resolved(p: Partial<ResolvedRole> & { id: string; name: string }): ResolvedRole {
   return {
     kind: "orchestrator", responsibility: "", icon: "", parentId: null, projectId: null,
-    binding: { mode: "pinned", threadId: `thr_${p.id}` }, createdAt: 0, updatedAt: 0,
+    binding: { mode: "pinned", threadId: `thr_${p.id}` }, primary: false, createdAt: 0, updatedAt: 0,
     active: { kind: "thread", threadId: `thr_${p.id}`, reason: "pinned" }, parentName: null, ...p,
   };
 }
@@ -49,8 +49,8 @@ describe("registrations", () => {
     expect(app.navPanels.map((p) => p.path)).toEqual(["agents"]);
     expect(app.appOverlays.map((o) => o.id)).toEqual(["roster"]);
     expect(app.threadActions.map((a) => a.id)).toEqual(["role", "remove-role"]);
-    // A thread row gets one role mark: the row status. No second row-metadata mark.
-    expect(app.threadRowMetadata ?? []).toHaveLength(0);
+    // A thread row gets one role mark, on the metadata line after the title.
+    expect(app.threadRowMetadata.map((m) => m.id)).toEqual(["role-mark"]);
   });
 });
 
@@ -114,19 +114,16 @@ describe("sidebar placement", () => {
     await scripts.lifecycle.dispose();
   });
 
-  it("marks role threads with one stylesheet mark before the title, never the row state", async () => {
-    standardSidebar();
-    const scripts = await mountPluginContentScripts(app, { pluginId: "agent-roster" });
-    act(() => setState({ roles: ROLES }));
-    const css = () => document.querySelector("style[data-agent-roster-marks]")?.textContent ?? "";
-    expect(css()).toContain('a[data-sidebar-thread-id="thr_site"]');
-    expect(css()).toContain(".bb-thread-title::before");
-    expect(css().match(/thr_site/g)).toHaveLength(1);
-    expect(scripts.inspection.threadRowStatusCalls).toHaveLength(0);
-    act(() => setState({ roles: [ROLES[0]] }));
-    expect(css()).not.toContain("thr_site");
-    await scripts.lifecycle.dispose();
-    expect(document.querySelector("style[data-agent-roster-marks]")).toBeNull();
+  it("a thread row gets one monochrome role mark and nothing else; no mark for a thread without a role", () => {
+    const mark = app.threadRowMetadata[0]!;
+    const C = mark.component as (p: unknown) => JSX.Element | null;
+    const on = renderSlot({ component: C }, { thread: { id: "thr_site" }, data: ROLES } as never);
+    expect(on.container.querySelectorAll("[data-agent-roster-mark]")).toHaveLength(1);
+    expect(on.container.querySelector("[data-agent-roster-mark]")!.getAttribute("title")).toBe("Site — оркестратор");
+    on.lifecycle.unmount();
+    const off = renderSlot({ component: C }, { thread: { id: "thr_other" }, data: ROLES } as never);
+    expect(off.container.querySelectorAll("[data-agent-roster-mark]")).toHaveLength(0);
+    off.lifecycle.unmount();
   });
 });
 
@@ -163,7 +160,7 @@ describe("block, page, dialog", () => {
       expect(li.querySelectorAll("[data-state-mark]")).toHaveLength(1);
       expect(li.querySelectorAll("[data-state-mark] svg, [data-state-mark] img")).toHaveLength(0);
     }
-    (site.querySelector("button[title]") as HTMLButtonElement).click();
+    fireEvent.click(site.querySelector("[data-agent-roster-link]")!);
     expect(JSON.stringify(slot.inspection.navigateCalls)).toContain("thr_site");
     slot.lifecycle.unmount();
     await scripts.lifecycle.dispose();
@@ -197,7 +194,7 @@ describe("block, page, dialog", () => {
       experimental_rpcContract: rpcContract,
       rpc: {
         roster_list: () => ({ roles: [], launchDocUrl: null }),
-        roster_upsert: (input: unknown) => { saved.push(input); return { ...(input as object), id: "x", createdAt: 0, updatedAt: 0 }; },
+        roster_upsert: (input: unknown) => { saved.push(input); return { icon: "", responsibility: "", parentId: null, projectId: null, primary: false, ...(input as object), id: "x", createdAt: 0, updatedAt: 0 }; },
       } as never,
     });
     const [assign] = app.threadActions;
@@ -243,7 +240,14 @@ describe("0.2: working with an agent from the block", () => {
     const site = host.querySelector('[data-agent-roster-role="site"]')!;
     // roles stand side by side: no indent for the subordinate role
     expect(site.querySelector("[data-agent-roster-toggle]")!.getAttribute("style")).toBe(host.querySelector('[data-agent-roster-role="lead"] [data-agent-roster-toggle]')!.getAttribute("style"));
-    await waitFor(() => expect(site.querySelector("[data-agent-roster-activity]")?.textContent).toBe("Закончил: отчёт"));
+    // Collapsed: the name line and one status line under it; the arrow is on the right, never on the left.
+    expect(site.querySelectorAll(":scope > *")).toHaveLength(1);
+    const nameLine = site.querySelector("[data-agent-roster-name-line]")!;
+    const kids = Array.from(nameLine.children);
+    expect(kids[0]!.hasAttribute("data-role-icon")).toBe(true);
+    const toggleAt = kids.findIndex((c) => c.hasAttribute("data-agent-roster-toggle"));
+    expect(toggleAt).toBeGreaterThan(kids.findIndex((c) => c.textContent === "Site"));
+    await waitFor(() => expect(site.querySelector("[data-agent-roster-status]")?.textContent).toBe("Закончил: отчёт"));
     // waiting executor → pill → opens that very thread
     const pill = site.querySelector("[data-agent-roster-waiting]") as HTMLButtonElement;
     expect(pill.getAttribute("title")).toContain("Ждёт тебя");
@@ -254,10 +258,14 @@ describe("0.2: working with an agent from the block", () => {
     const ex = Array.from(site.querySelectorAll("[data-executor]")).map((e) => [e.getAttribute("data-executor"), e.getAttribute("data-depth"), e.getAttribute("data-state")]);
     expect(ex).toEqual([["thr_x1", "1", "running"], ["thr_x11", "2", "waiting"]]);
     // record menu
-    act(() => (site.querySelector("[data-agent-roster-menu-button]") as HTMLButtonElement).click());
-    const items = Array.from(site.querySelectorAll("[role=menuitem]")).map((e) => e.textContent);
-    expect(items).toEqual(["Открыть", "Написать…", "Изменить роль…", "Перевести на другой тред…", "Снять роль"]);
-    act(() => (site.querySelectorAll("[role=menuitem]")[1] as HTMLButtonElement).click());
+    const trigger = site.querySelector("[data-agent-roster-menu-button]") as HTMLButtonElement;
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: "mouse" });
+    fireEvent.click(trigger);
+    await waitFor(() => expect(document.querySelectorAll("[role=menuitem]").length).toBeGreaterThan(0));
+    const items = Array.from(document.querySelectorAll("[role=menuitem]")).map((e) => e.textContent);
+    expect(items).toEqual(["Открыть", "Написать…", "Сведения", "Изменить роль…", "Перевести на другой тред…", "Снять роль"]);
+    act(() => { fireEvent.click(document.querySelectorAll("[role=menuitem]")[1]!); });
+    await waitFor(() => expect(site.querySelector("[data-agent-roster-compose] textarea")).not.toBeNull());
     const box = site.querySelector("[data-agent-roster-compose] textarea") as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: "статус?" } });
     fireEvent.keyDown(box, { key: "Enter" });
@@ -294,15 +302,96 @@ describe("0.2: channels and project work in the row", () => {
     expect(lead.querySelector('[data-agent-roster-channel="telegram"]')!.getAttribute("title")).toContain("Telegram");
     expect(site.querySelector("[data-agent-roster-channel]")).toBeNull();
     expect(lead.querySelectorAll("[data-role-icon]")).toHaveLength(1);
-    expect(site.querySelector("[data-agent-roster-work]")!.textContent!.replace(/\s/g, "")).toBe("1·1");
+    expect(site.querySelector("[data-agent-roster-work]")!.textContent!.replace(/\s/g, "")).toBe("↳1·1");
     const toggle = site.querySelector("[data-agent-roster-toggle]") as HTMLButtonElement;
     if (toggle.getAttribute("aria-expanded") !== "true") act(() => toggle.click());
-    expect(site.textContent).toContain("Под управлением");
-    expect(site.textContent).toContain("Не под управлением");
+    expect(site.querySelector("[data-agent-roster-work]")!.textContent).toBe("↳1 · 1");
+    expect(site.textContent).toContain("под управлением");
+    expect(site.textContent).toContain("не под управлением");
     expect(site.querySelector('[data-unmanaged="thr_free"]')).not.toBeNull();
     expect(site.querySelector('[data-executor="thr_c"]')).not.toBeNull();
     slot.lifecycle.unmount();
     await scripts.lifecycle.dispose();
     window.localStorage.clear();
+  });
+});
+
+describe("0.2.1: details card", () => {
+  it("«Сведения» shows name, kind, duty, project, thread, activity, executors, channels, model and last activity", async () => {
+    const roles = [{ ...ROLES[1], responsibility: "сайт", projectId: "p", channels: [{ kind: "telegram", label: "Telegram: тема 5" }] }];
+    const slot = renderSlot(app.appOverlays[0]!, {}, {
+      rpc: {
+        roster_list: () => ({ roles, launchDocUrl: null }),
+        roster_activity: () => ({}),
+        roster_details: () => ({ activity: "Занят: вёрстка", model: "gpt-x", providerId: "codex", lastActiveAt: 1_700_000_000_000 }),
+      } as never,
+      sidebarThreads: {
+        threads: [{ ...row("thr_site", null), title: "Site thread", projectId: "p" }, { ...row("thr_c", "thr_site", { status: "active", indicator: "runtime" }), title: "c", projectId: "p" }] as never,
+        projects: [{ id: "p", name: "Shop", isPersonal: false, href: "", settingsHref: "" }] as never,
+      },
+    });
+    await waitFor(() => expect(getState().roles).not.toBeNull());
+    act(() => setState({ dialog: { mode: "details", roleId: "site" } }));
+    await waitFor(() => expect(document.querySelector("[data-agent-roster-details] [data-agent-roster-card]")).not.toBeNull());
+    const card = document.querySelector("[data-agent-roster-details] [data-agent-roster-card]")!;
+    await waitFor(() => expect(card.textContent).toContain("Занят: вёрстка"));
+    for (const text of ["Site", "оркестратор", "сайт", "Shop", "Site thread", "свои работают 1", "Telegram: тема 5", "codex · gpt-x"]) expect(card.textContent).toContain(text);
+    slot.lifecycle.unmount();
+  });
+});
+
+describe("0.2.1: a record opens like bb's thread row", () => {
+  it("plain click opens the active thread in place, closes the phone drawer, and the open record is highlighted", async () => {
+    document.body.innerHTML = `<div role="dialog" data-state="open" id="drawer"><div data-sidebar="sidebar"><div data-testid="app-sidebar-body"><div data-sidebar="content"><div id="list"></div></div></div></div></div>`;
+    let escapes = 0;
+    document.getElementById("drawer")!.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Escape") escapes += 1; });
+    const scripts = await mountPluginContentScripts(app, { pluginId: "agent-roster" });
+    await frame();
+    const slot = renderSlot(app.appOverlays[0]!, {}, {
+      rpc: { roster_list: () => ({ roles: ROLES, launchDocUrl: null }), roster_activity: () => ({}) } as never,
+      sidebarThreads: { threads: [{ ...row("thr_lead", null), title: "lead", href: "/t/lead" }, { ...row("thr_site", null), title: "site", href: "/t/site" }] as never },
+      context: { projectId: null, threadId: "thr_site" },
+    });
+    const host = document.querySelector(`[${HOST_ATTR}]`)!;
+    await waitFor(() => expect(host.querySelectorAll("[data-agent-roster-role]")).toHaveLength(2));
+    const site = host.querySelector('[data-agent-roster-role="site"]')!;
+    expect(site.hasAttribute("data-active")).toBe(true);
+    expect(host.querySelector('[data-agent-roster-role="lead"]')!.hasAttribute("data-active")).toBe(false);
+    const link = host.querySelector('[data-agent-roster-role="lead"] [data-agent-roster-link]') as HTMLAnchorElement;
+    expect(link.getAttribute("href")).toBe("/t/lead");
+    fireEvent.click(link);
+    expect(JSON.stringify(slot.inspection.navigateCalls)).toContain("thr_lead");
+    expect(JSON.stringify(slot.inspection.navigateCalls)).not.toContain("split");
+    expect(escapes).toBe(1);
+    slot.lifecycle.unmount();
+    await scripts.lifecycle.dispose();
+  });
+});
+
+import { revealProject, revealSupported } from "../lib/reveal";
+import { RoleIcon } from "../app";
+describe("0.2.1: go to project and the role icon", () => {
+  it("no data-sidebar-project-id anywhere → not supported; section missing → false (caller uses toProject); present → scrolls", () => {
+    document.body.innerHTML = `<div data-testid="app-sidebar-body"><div id="other"></div></div>`;
+    expect(revealSupported()).toBe(false);
+    document.body.innerHTML = `<div data-testid="app-sidebar-body"><div data-sidebar-project-id="p1"><div data-sidebar="group-label">P1</div></div></div>`;
+    expect(revealSupported()).toBe(true);
+    expect(revealProject("p2")).toBe(false);
+    let scrolled = 0;
+    (document.querySelector('[data-sidebar-project-id="p1"]') as HTMLElement).scrollIntoView = () => { scrolled += 1; };
+    expect(revealProject("p1")).toBe(true);
+    expect(scrolled).toBe(1);
+  });
+  it("an orchestrator with a project logo: the logo (monochrome) plus the kind in the corner — still one role icon", () => {
+    const r = renderSlot({ component: RoleIcon as never }, { role: { icon: "", kind: "orchestrator" }, logo: "data:image/svg+xml;base64,AA" } as never);
+    expect(r.container.querySelectorAll("[data-role-icon]")).toHaveLength(1);
+    const img = r.container.querySelector("img")!;
+    expect(img.getAttribute("style")).toContain("grayscale(1)");
+    expect(r.container.querySelector("[data-kind-corner]")).not.toBeNull();
+    r.lifecycle.unmount();
+    const plain = renderSlot({ component: RoleIcon as never }, { role: { icon: "", kind: "agent" }, logo: null } as never);
+    expect(plain.container.querySelector("img")).toBeNull();
+    expect(plain.container.querySelector("[data-kind-corner]")).toBeNull();
+    plain.lifecycle.unmount();
   });
 });
