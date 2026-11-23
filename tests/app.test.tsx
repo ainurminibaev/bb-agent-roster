@@ -498,3 +498,41 @@ describe("0.4.1: hovering a record moves nothing", () => {
     await scripts.lifecycle.dispose();
   });
 });
+
+import { experimental_resolveThreadStatus as bbResolve } from "@get-bb/plugin-sdk/app";
+describe("0.4.2: the same state signs as bb's thread rows", () => {
+  it("a record and its executor rows draw bb's glyph for the same state; a failed queued message is named in words", async () => {
+    machineTabsSidebar();
+    const scripts = await mountPluginContentScripts(app, { pluginId: "agent-roster" });
+    await frame();
+    const base = { activity: { workflows: 0, backgroundAgents: 0, backgroundCommands: 0, planMode: 0 }, runtimeStatus: "idle", isUnread: false };
+    const site = { ...row("thr_site", null, { status: "idle", indicator: "queued-failed", queuedWork: "failed" }), ...base, title: "site" };
+    const child = { ...row("thr_c", "thr_site", { status: "active", indicator: "runtime" }), ...base, runtimeStatus: "active", queuedWork: "none", title: "child" };
+    const lead = { ...row("thr_lead", null), ...base, queuedWork: "none", title: "lead" };
+    const slot = renderSlot(app.appOverlays[0]!, {}, {
+      rpc: { roster_list: () => ({ roles: ROLES, launchDocUrl: null }), roster_activity: () => ({}), roster_executors: () => ({ threads: [] }), roster_details: () => ({ activity: null, model: null, providerId: null, lastActiveAt: null }) } as never,
+      sidebarThreads: { threads: [lead, site, child] as never },
+    });
+    const host = document.querySelector(`[${HOST_ATTR}]`)!;
+    await waitFor(() => expect(host.querySelector('[data-agent-roster-role="site"] [data-state-mark]')).not.toBeNull());
+    const rec = host.querySelector('[data-agent-roster-role="site"]')!;
+    const expected = bbResolve({ thread: site as never, hiddenThreads: [child as never], hasUnsubmittedDraft: false, rowStatus: null }).indicator;
+    expect(rec.querySelector("[data-agent-roster-line] [data-state-mark]")!.getAttribute("data-indicator")).toBe(expected);
+    // no home-made red dot anywhere
+    expect(rec.querySelector(".bg-red-500")).toBeNull();
+    const toggle = rec.querySelector("[data-agent-roster-toggle]") as HTMLButtonElement;
+    if (toggle.getAttribute("aria-expanded") !== "true") act(() => toggle.click());
+    await waitFor(() => expect(rec.querySelector('[data-executor="thr_c"] [data-state-mark]')).not.toBeNull());
+    const childExpected = bbResolve({ thread: child as never, hiddenThreads: [], hasUnsubmittedDraft: false, rowStatus: null }).indicator;
+    expect(rec.querySelector('[data-executor="thr_c"] [data-state-mark]')!.getAttribute("data-indicator")).toBe(childExpected);
+    // the card names the reason in words
+    act(() => setState({ dialog: { mode: "details", roleId: "site" } }));
+    await waitFor(() => expect(document.querySelector("[data-agent-roster-details] [data-agent-roster-card]")).not.toBeNull());
+    if (bbResolve({ thread: site as never, hiddenThreads: [], hasUnsubmittedDraft: false, rowStatus: null }).indicator === "queued-failed") {
+      expect(document.querySelector("[data-agent-roster-details] [data-agent-roster-card]")!.textContent).toContain("в очереди сообщение, которое не отправилось");
+    }
+    slot.lifecycle.unmount();
+    await scripts.lifecycle.dispose();
+    window.localStorage.clear();
+  });
+});

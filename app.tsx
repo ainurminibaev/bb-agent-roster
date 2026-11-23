@@ -2,12 +2,14 @@ import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, u
 import type { FormEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type * as React from "react";
-import type { ExperimentalThreadRowMetadataProps } from "@get-bb/plugin-sdk/app";
+import type { ExperimentalThreadRowMetadataProps, PluginSidebarThread } from "@get-bb/plugin-sdk/app";
 import {
   definePluginApp,
   experimental_THREAD_ACTION_GROUPS,
   experimental_useSidebarThreads,
   experimental_useSidebarThreadSplit,
+  experimental_ThreadStatusGlyph as ThreadStatusGlyph,
+  experimental_resolveThreadStatus,
   useBbContext,
   useBbNavigate,
   useRealtime,
@@ -89,6 +91,8 @@ export interface Row extends RowFacts {
   title: string;
   projectId: string | null;
   href: string | null;
+  /** bb's own row, for bb's status glyph; absent for archived rows read from the server. */
+  raw?: PluginSidebarThread;
 }
 function useRows(): { rows: Row[]; byId: Map<string, Row> } {
   const { threads } = experimental_useSidebarThreads();
@@ -104,12 +108,77 @@ function useRows(): { rows: Row[]; byId: Map<string, Row> } {
       title: String(t.displayTitle ?? t.title ?? t.id),
       projectId: typeof t.projectId === "string" ? t.projectId : null,
       href: typeof t.href === "string" ? t.href : null,
+      raw: t,
     }));
     return { rows, byId: new Map(rows.map((r) => [r.id, r])) };
   }, [threads]);
 }
 
 // ---------- pieces ----------
+
+/**
+ * bb's own status glyph for a thread row — the same sign bb's list draws for the
+ * same state (⊗ for an error or a failed queued message, the spinner for work,
+ * the dot, the waiting sign). A record stands for its thread with its executors
+ * as hidden subthreads, like a collapsed row. No raw row (archived, read from the
+ * server) → bb's archive glyph.
+ */
+function BbStatus({ thread, hidden, archived, quiet }: { thread: PluginSidebarThread | undefined; hidden?: readonly PluginSidebarThread[]; archived?: boolean; quiet?: boolean }) {
+  const titlesOff = useContext(CardOpen);
+  if (archived || !thread) {
+    return <span data-state-mark="" data-indicator="archived" className="inline-flex shrink-0"><ThreadStatusGlyph indicator="none" archived size="compact" /></span>;
+  }
+  const status = resolveStatus(thread, hidden ?? []);
+  if (!status) return null;
+  const label = indicatorLabel(status.indicator) ?? status.label ?? undefined;
+  return (
+    <span data-state-mark="" data-indicator={status.indicator} role="status" aria-label={label} title={titlesOff || quiet ? undefined : label} className="inline-flex shrink-0">
+      <ThreadStatusGlyph indicator={status.indicator} size="compact" />
+    </span>
+  );
+}
+
+/** bb's own status resolution, read tolerantly: missing fields take bb's defaults; a failure draws nothing. */
+const NO_ACTIVITY = { workflows: 0, backgroundAgents: 0, backgroundCommands: 0, planMode: 0 };
+function safeThread(t: PluginSidebarThread): PluginSidebarThread {
+  return { ...t, activity: t.activity ?? NO_ACTIVITY, queuedWork: t.queuedWork ?? "none", runtimeStatus: t.runtimeStatus ?? t.status, hasPendingInteraction: Boolean(t.hasPendingInteraction), isUnread: Boolean(t.isUnread) } as PluginSidebarThread;
+}
+export function resolveStatus(thread: PluginSidebarThread, hidden: readonly PluginSidebarThread[]) {
+  try {
+    return experimental_resolveThreadStatus({ thread: safeThread(thread), hiddenThreads: hidden.map(safeThread), hasUnsubmittedDraft: false, rowStatus: null });
+  } catch {
+    return null;
+  }
+}
+
+/** Russian words for bb's indicators where the reason matters (card, tooltips). */
+export function indicatorLabel(indicator: string): string | null {
+  switch (indicator) {
+    case "queued-failed": return "в очереди сообщение, которое не отправилось";
+    case "unread-error": return "ошибка";
+    case "waiting-for-input": return "ждёт ответа владельца";
+    case "runtime": return "работает";
+    case "queued-waiting": return "в очереди ждёт сообщение";
+    default: return null;
+  }
+}
+
+/** Live descendants of a thread among bb's rows (a record's executors). */
+function descendantRows(rootId: string, rows: readonly Row[]): PluginSidebarThread[] {
+  const children = new Map<string, Row[]>();
+  for (const r of rows) if (r.parentThreadId && !r.isArchived) (children.get(r.parentThreadId) ?? children.set(r.parentThreadId, []).get(r.parentThreadId)!).push(r);
+  const out: PluginSidebarThread[] = [];
+  const stack = [...(children.get(rootId) ?? [])];
+  const seen = new Set<string>([rootId]);
+  while (stack.length) {
+    const r = stack.pop()!;
+    if (seen.has(r.id)) continue;
+    seen.add(r.id);
+    if (r.raw) out.push(r.raw);
+    stack.push(...(children.get(r.id) ?? []));
+  }
+  return out;
+}
 
 /** State like bb's thread rows: a spinner while working, otherwise a dot. */
 function StateMark({ state, label }: { state: RoleState; label?: string }) {
@@ -386,7 +455,7 @@ function ExecutorRow({ n, byId, dense, currentThreadId }: { n: ExecutorNode; byI
       <ThreadLink threadId={n.row.id} href={byId.get(n.row.id)?.href ?? null} label={`Открыть ${title}`} />
       <span className={cn("pointer-events-none min-w-0 flex-1 truncate", n.row.isArchived && "opacity-70")}>{title}</span>
       {n.hiddenBelow > 0 ? <span className="pointer-events-none shrink-0 text-[11px]">ещё {n.hiddenBelow}</span> : null}
-      <span className="pointer-events-none flex"><StateMark state={n.state} /></span>
+      <span className="pointer-events-none flex"><BbStatus thread={byId.get(n.row.id)?.raw} archived={n.row.isArchived} /></span>
     </li>
   );
 }
@@ -451,7 +520,7 @@ function Executors({ role, rows, dense, others }: { role: ResolvedRole; rows: { 
               style={{ ...pad, paddingRight: 8 }}>
               <ThreadLink threadId={id} href={rows.byId.get(id)?.href ?? null} label={`Открыть ${rows.byId.get(id)?.title ?? id}`} />
               <span className="pointer-events-none min-w-0 flex-1 truncate">{rows.byId.get(id)?.title ?? id}</span>
-              <span className="pointer-events-none flex"><StateMark state="running" /></span>
+              <span className="pointer-events-none flex"><BbStatus thread={rows.byId.get(id)?.raw} /></span>
             </li>
           ))}
         </>
@@ -498,6 +567,9 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
   const isOpen = useExpanded(role.id);
   const [writing, setWriting] = useState(false);
   const [cardOpen, setCardOpen] = useState(false);
+  // The card opens just under the record at the pointer's x (fixed when it opens: it does not follow the mouse).
+  const pointerX = useRef(0);
+  const [cardX, setCardX] = useState(0);
   const allRoles = useRoles() ?? [];
   const summary = summarize(role.active, rows.rows, rows.byId);
   const work = projectWork(role, role.active, rows.rows, allRoles);
@@ -516,9 +588,10 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
   return (
     <li data-agent-roster-role={role.id} data-state={summary.state} data-active={active ? "" : undefined}>
       <CardOpen.Provider value={cardOpen}>
-      <HoverCard openDelay={450} closeDelay={200} onOpenChange={setCardOpen}>
+      <HoverCard openDelay={450} closeDelay={200} onOpenChange={(open) => { if (open) setCardX(pointerX.current); setCardOpen(open); }}>
         <HoverCardTrigger asChild>
           <div data-agent-roster-line=""
+            onPointerMove={(e) => { if (!cardOpen) pointerX.current = Math.max(0, e.clientX - e.currentTarget.getBoundingClientRect().left); }}
             className={cn("group/role relative flex items-center gap-2 rounded-md py-0.5 pr-1 hover:bg-sidebar-accent", active && "bg-sidebar-accent")}
             style={{ paddingLeft: leftPad }}>
             {threadId ? (
@@ -544,7 +617,7 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
                   ждёт
                 </button>
               ) : null}
-              <StateMark state={summary.state} label={label} />
+              {threadId ? <BbStatus thread={rows.byId.get(threadId)?.raw} hidden={descendantRows(threadId, rows.rows)} /> : null}
               <button type="button" data-agent-roster-toggle="" aria-label={isOpen ? `Свернуть ${role.name}` : `Раскрыть ${role.name}`} aria-expanded={isOpen}
                 disabled={!canExpand}
                 className="pointer-events-auto relative z-10 flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-sidebar-foreground disabled:opacity-30"
@@ -561,7 +634,7 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
             </span>
           </div>
         </HoverCardTrigger>
-        <HoverCardContent side="right" align="start" sideOffset={26} collisionPadding={8} className="w-80 p-3" data-agent-roster-card-popup="">
+        <HoverCardContent side="bottom" align="start" alignOffset={cardX + 8} sideOffset={2} collisionPadding={8} avoidCollisions className="w-80 p-3" data-agent-roster-card-popup="">
           <RoleCard role={role} rows={rows} />
         </HoverCardContent>
       </HoverCard>
@@ -626,6 +699,17 @@ function Counter({ own, others, total }: { own: number; others: number; total: n
 /** Details of a record: the long-hover card and the "Сведения" dialog show the same. */
 function RoleCard({ role, rows }: { role: ResolvedRole; rows: { rows: Row[]; byId: Map<string, Row> } }) {
   const navigate = useBbNavigate();
+  const activeRaw = role.active.kind === "thread" ? rows.byId.get(role.active.threadId)?.raw : undefined;
+  const stateWords = (() => {
+    if (role.active.kind !== "thread") return role.active.kind === "external" ? "в другом BB" : "нет действующего треда";
+    if (!activeRaw) return null;
+    // The role's own thread first: a failed queued message or an error is named in words even while executors work.
+    const own = resolveStatus(activeRaw, []);
+    if (own && ["queued-failed", "unread-error", "waiting-for-input"].includes(own.indicator)) return indicatorLabel(own.indicator);
+    const st = resolveStatus(activeRaw, descendantRows(role.active.threadId, rows.rows));
+    if (!st) return null;
+    return indicatorLabel(st.indicator) ?? (st.isWorking ? "работает" : "простаивает");
+  })();
   const rpc = useRpc<typeof rpcContract>();
   const { projects } = experimental_useSidebarThreads();
   const allRoles = useRoles() ?? [];
@@ -650,6 +734,7 @@ function RoleCard({ role, rows }: { role: ResolvedRole; rows: { rows: Row[]; byI
       <dl className="flex flex-col gap-1">
         {fact("Отвечает за", role.responsibility)}
         {fact("Подчиняется", role.parentName ?? "владельцу")}
+        {fact("Состояние", stateWords)}
         {role.kind === "orchestrator" ? fact("Правила", role.rulesEnabled ? "общие правила оркестратора включены" : "общие правила оркестратора выключены") : null}
         {fact("Проект", project ? (projectId && revealSupported()
           ? <button type="button" data-agent-roster-card-project="" className="text-left underline-offset-2 hover:underline" onClick={() => { if (!revealProject(projectId)) navigate.toProject(projectId); }}>{project}</button>
