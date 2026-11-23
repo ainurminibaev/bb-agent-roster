@@ -50,6 +50,8 @@ import { Input } from "@/components/ui/input";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { InstallDialog, InstallRows, openInstall } from "./install-ui";
+import type { InstallRecord } from "./lib/install-server";
 
 export const CHANGED = "roster-changed";
 const REFRESH_MS = 30_000;
@@ -65,6 +67,8 @@ function refresh(rpc: Rpc): Promise<void> {
   inflight ??= rpc
     .call("roster_list", null)
     .then((r) => setState({ roles: r.roles as ResolvedRole[], launchDocUrl: r.launchDocUrl, iconMarks: r.iconMarks === true, blockLimit: typeof r.blockLimit === "number" && r.blockLimit > 0 ? r.blockLimit : 5 }))
+    .then(() => rpc.call("install_list", null))
+    .then((list) => { if (Array.isArray(list)) setState({ installs: list as InstallRecord[] }); })
     .catch(() => undefined)
     .finally(() => { inflight = null; });
   return inflight;
@@ -894,12 +898,19 @@ export function SidebarBlock() {
         <button type="button" className="flex-1 truncate text-left hover:text-sidebar-foreground" onClick={() => navigate.toPluginPanel(PANEL_PATH)}>
           {MODULE_NAME}
         </button>
-        {roles.length > 0 ? (
-          <button type="button" className="flex size-6 items-center justify-center rounded-md hover:bg-sidebar-accent hover:text-sidebar-foreground" aria-label="Добавить агента" title="Добавить агента" onClick={() => openDialog(ADD_REQUEST)}>
-            <Icon name="Plus" className="size-3.5" />
-          </button>
-        ) : null}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button type="button" data-agent-roster-add="" className="flex size-6 cursor-pointer items-center justify-center rounded-md hover:bg-sidebar-accent hover:text-sidebar-foreground" aria-label="Добавить агента" title="Добавить агента или сотрудника">
+              <Icon name="Plus" className="size-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem data-agent-roster-add-record="" onSelect={() => openDialog(ADD_REQUEST)}>Запись в список</DropdownMenuItem>
+            <DropdownMenuItem data-agent-roster-add-employee="" onSelect={() => openInstall("new")}>Сотрудник на Vallis</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
+      <InstallRows />
       {roles.length === 0 ? (
         <button type="button" className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground" onClick={() => openDialog(ADD_REQUEST)}>
           <Icon name="Plus" className="size-4" />
@@ -1298,6 +1309,7 @@ export function RosterOverlay() {
       <RoleDialog />
       <MoveDialog />
       <DetailsDialog />
+      <InstallDialog />
     </>
   );
 }

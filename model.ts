@@ -62,8 +62,16 @@ export interface Role {
    * and always off for an external employee.
    */
   manageTitle: boolean;
+  /** Addresses of an installed employee (from the installer's result): its BB, its bot. */
+  links: RoleLink[];
   createdAt: number;
   updatedAt: number;
+}
+
+export interface RoleLink {
+  kind: string;
+  url: string | null;
+  bot: string | null;
 }
 
 export interface Roster {
@@ -116,6 +124,16 @@ function parseBinding(raw: unknown, kind: RoleKind): Binding {
   return { mode: "pinned", threadId: isThreadId(b.threadId) ? b.threadId : null };
 }
 
+export function parseLinks(raw: unknown): RoleLink[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((l) => {
+    const o = l && typeof l === "object" ? (l as Record<string, unknown>) : null;
+    const kind = o && typeof o.kind === "string" ? o.kind.slice(0, 40) : null;
+    if (!kind) return [];
+    return [{ kind, url: isSafeUrl(o!.url) ? o!.url : null, bot: typeof o!.bot === "string" ? o!.bot.slice(0, 120) : null }];
+  }).slice(0, 10);
+}
+
 /**
  * Reads stored data tolerantly: a broken entry is dropped, unknown fields and
  * values fall back, dangling or cyclic parents become roots. Never throws.
@@ -145,6 +163,7 @@ export function parseRoster(raw: unknown): Roster {
       primary: r.primary === true,
       rulesEnabled: kind === "orchestrator" && r.rulesEnabled === true,
       manageTitle: kind !== "external" && (typeof r.manageTitle === "boolean" ? r.manageTitle : kind === "orchestrator"),
+      links: parseLinks(r.links),
       createdAt: num(r.createdAt, 0),
       updatedAt: num(r.updatedAt, 0),
     });

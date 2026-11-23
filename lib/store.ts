@@ -2,6 +2,7 @@
 // this bundle: the sidebar mount point, the latest roster, and dialog requests.
 import { useSyncExternalStore } from "react";
 import type { ResolvedRole, RoleKind } from "../model";
+import type { InstallRecord } from "./install-server";
 
 export type DialogRequest =
   | { mode: "add"; kind: RoleKind; threadId: string | null; projectId: string | null }
@@ -18,9 +19,13 @@ interface State {
   iconMarks: boolean;
   /** How many records the sidebar block shows before «Показать ещё». */
   blockLimit: number;
+  /** Employee installs started from «＋ → Сотрудник на Vallis» (their last known state). */
+  installs: InstallRecord[];
+  /** The install screen: "new", an install id, or closed. */
+  install: string | null;
 }
 
-let state: State = { host: null, roles: null, launchDocUrl: null, dialog: null, iconMarks: false, blockLimit: 5 };
+let state: State = { host: null, roles: null, launchDocUrl: null, dialog: null, iconMarks: false, blockLimit: 5, installs: [], install: null };
 const listeners = new Set<() => void>();
 
 export function getState(): State {
@@ -41,6 +46,6 @@ export function openDialog(request: DialogRequest): void {
   setState({ dialog: request });
 }
 export function resetStore(): void {
-  state = { host: null, roles: null, launchDocUrl: null, dialog: null, iconMarks: false, blockLimit: 5 };
+  state = { host: null, roles: null, launchDocUrl: null, dialog: null, iconMarks: false, blockLimit: 5, installs: [], install: null };
   for (const listener of [...listeners]) listener();
 }

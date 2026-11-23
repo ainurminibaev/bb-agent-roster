@@ -3,6 +3,8 @@
 // short per-thread hint. Rules live in model.ts.
 import { cliCommand, defineCli, defineRpcContract, PluginCliError, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { createInstaller } from "./lib/install-server";
+import type { FormField } from "./lib/install";
 import { agentsMdSection, appendSection, hasSection, ORCHESTRATOR_RULES, rolePointer } from "./orchestrator-rules";
 import {
   type ActiveTarget,
@@ -16,6 +18,7 @@ import {
   isThreadId,
   KIND_LABEL,
   LIMITS,
+  parseLinks,
   parseRoster,
   parseTitleMemory,
   planTitles,
@@ -73,6 +76,8 @@ const roleInput = z.object({
   rulesEnabled: z.boolean().optional(),
   /** Keep the active thread's title "Name — project"; omitted → on for an orchestrator, off for an agent, unchanged when the kind stays. */
   manageTitle: z.boolean().optional(),
+  /** Addresses of an installed employee; omitted → unchanged. */
+  links: z.array(z.object({ kind: z.string().max(40), url: z.string().max(500).nullable(), bot: z.string().max(120).nullable() })).max(10).optional(),
 });
 export type RoleInput = z.input<typeof roleInput>;
 
@@ -93,6 +98,7 @@ const roleSchema = z.object({
   primary: z.boolean(),
   rulesEnabled: z.boolean(),
   manageTitle: z.boolean(),
+  links: z.array(z.object({ kind: z.string(), url: z.string().nullable(), bot: z.string().nullable() })).default([]),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
@@ -108,6 +114,20 @@ export const rpcContract = defineRpcContract({
     output: z.object({ roles: z.array(resolvedSchema), launchDocUrl: z.string().nullable(), iconMarks: z.boolean().optional(), blockLimit: z.number().optional() }),
   },
   roster_upsert: { input: roleInput, output: roleSchema },
+  install_machines: { input: z.null(), output: z.object({ machines: z.array(z.object({ id: z.string(), name: z.string(), connected: z.boolean() })) }) },
+  install_describe: { input: z.object({ hostId: z.string().max(64) }), output: z.any() },
+  install_start: {
+    input: z.object({ hostId: z.string().max(64), fields: z.array(z.any()).max(60), values: z.record(z.string().max(80), z.union([z.string().max(2000), z.boolean()])) }),
+    output: z.any(),
+  },
+  install_read: { input: z.object({ id: z.string().max(40) }), output: z.any() },
+  install_action: {
+    input: z.object({ id: z.string().max(40), kind: z.enum(["continue", "retry", "cancel"]), params: z.record(z.string().max(80), z.union([z.string().max(2000), z.boolean()])).default({}) }),
+    output: z.any(),
+  },
+  install_finish: { input: z.object({ id: z.string().max(40) }), output: z.object({ roleId: z.string() }) },
+  install_remove: { input: z.object({ id: z.string().max(40) }), output: z.object({ removed: z.boolean() }) },
+  install_list: { input: z.null(), output: z.any() },
   roster_remove: { input: z.object({ id: z.string().max(48) }), output: z.object({ removed: z.boolean() }) },
   roster_activity: {
     input: z.object({ threadIds: z.array(z.string().max(64)).max(50) }),
@@ -161,6 +181,12 @@ export default async function plugin(bb: BbPluginApi) {
       description: "Открывается пунктом «Новый сотрудник на платформе» на экране добавления. Пусто — пункт не показывается.",
       default: "",
     },
+    installCommand: {
+      type: "string",
+      label: "Вход установщика сотрудника на машине",
+      description: "Команда установщика платформы на подключённой машине (install-state.md). По умолчанию vallis-install.",
+      default: "vallis-install",
+    },
     blockLimit: {
       type: "string",
       label: "Сколько записей показывать в блоке «Агенты»",
@@ -175,6 +201,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
   let current = await settings.get();
+  const installer = createInstaller(bb, { command: () => String(current.installCommand || "vallis-install").trim() || "vallis-install" });
   settings.onChange((next) => {
     current = next;
     bb.realtime.publish(CHANGED, { reason: "settings" });
@@ -337,6 +364,7 @@ export default async function plugin(bb: BbPluginApi) {
       rulesEnabled: input.kind === "orchestrator" && (input.rulesEnabled ?? (existing ? existing.rulesEnabled : true)),
       // Kept "Name — project" title: on by default for an orchestrator, off for an agent; never for an external one.
       manageTitle: input.kind !== "external" && (input.manageTitle ?? (existing && existing.kind === input.kind ? existing.manageTitle : input.kind === "orchestrator")),
+      links: input.links ? parseLinks(input.links) : existing ? existing.links : [],
     };
   }
   function upsert(raw: RoleInput): Promise<Role> {
@@ -586,9 +614,33 @@ export default async function plugin(bb: BbPluginApi) {
       return { roles, launchDocUrl: isSafeUrl(current.launchDocUrl) ? current.launchDocUrl : null, iconMarks: marks, blockLimit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 50) : 5 };
     },
     roster_upsert: (input) => upsert(input),
+    install_machines: async () => ({ machines: await installer.machines() }),
+    install_describe: ({ hostId }) => installer.describe(hostId),
+    install_start: async ({ hostId, fields, values }) => { const r = await installer.start(hostId, fields as FormField[], values); bb.realtime.publish(CHANGED, { reason: "install" }); return r; },
+    install_read: async ({ id }) => { const r = await installer.read(id); bb.realtime.publish(CHANGED, { reason: "install" }); return r; },
+    install_action: async ({ id, kind, params }) => { const r = await installer.act(id, kind, params); bb.realtime.publish(CHANGED, { reason: "install" }); return r; },
+    install_finish: async ({ id }) => ({ roleId: await finishInstall(id) }),
+    install_remove: async ({ id }) => { const removed = await installer.remove(id); bb.realtime.publish(CHANGED, { reason: "install" }); return { removed }; },
+    install_list: () => installer.load(),
     roster_remove: async ({ id }) => ({ removed: await remove(id) }),
     roster_set_thread: ({ id, threadId, replace }) => moveThread(id, threadId, replace),
   });
+
+  // ---------- 0.5: a new employee on the platform, from the installer's result ----------
+  async function finishInstall(id: string): Promise<string> {
+    const rec = (await installer.load()).find((r) => r.id === id);
+    const result = rec?.last?.state === "done" ? rec.last.result : null;
+    if (!rec || !result) throw new Error("The install has no result yet.");
+    if (rec.roleId && roster.roles.some((r) => r.id === rec.roleId)) return rec.roleId;
+    const role = await upsert({
+      name: result.role.name.slice(0, LIMITS.name), kind: "agent", responsibility: result.role.about.slice(0, LIMITS.responsibility), icon: "",
+      parentId: null, projectId: null, binding: { mode: "pinned", threadId: null },
+      links: result.links.map((l) => ({ kind: l.kind, url: isSafeUrl(l.url) ? l.url : null, bot: l.bot })), manageTitle: false,
+    });
+    await installer.update(id, (r) => ({ ...r, roleId: role.id }));
+    bb.realtime.publish(CHANGED, { reason: "install" });
+    return role.id;
+  }
 
   // ---------- agents ----------
   bb.agents.registerTool({

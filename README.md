@@ -62,6 +62,34 @@ Commands: [skills/agent-roster/SKILL.md](skills/agent-roster/SKILL.md).
 - Data comes from bb's sidebar thread data (live), plus server reads on change; no
   polling more often than every few seconds.
 
+### 0.5.0: a new employee on the platform from «＋»
+
+«＋» in the block → «Сотрудник на Vallis» opens the install screen. The plugin calls the platform's one
+installer entry on the employee's server and shows its state; the steps, questions and checks come from the
+installer as data (contract: install-state.md of the platform, format 1). The plugin names no step and no
+parameter — a new installer step or parameter appears on the screen without a plugin release.
+
+1. **Machine.** Pick a connected machine of this BB; no server in the list → bb's own way to add a machine
+   (Settings → Machines, `bb machine enroll`) and the launch document (setting «Адрес документа запуска»).
+2. **Form** from `<entry> employee --describe --json` on that machine: `string`, `choice`, `bool`; a `secret`
+   field only says which key will come through the secret store — the screen has no input for it and never
+   takes a secret. Field → parameter: the field's `flag`, else kebab-case id → `--<id> <value>`; bool true —
+   a bare flag; false and empty — not passed; secret — never. Values are separate arguments, no shell.
+3. **Run** in the background with bb's terminal on that machine; the entry's first output line names its state
+   file. The screen reads the file with one command per read, only while the screen is open and the install is
+   going, at most every 10 s; one read on opening.
+4. **Steps** by `title` and `state` as the installer reports them (an unknown step or state is shown as is).
+   «Ждёт человека»: `what`, `how`, `copy`, `show` and the installer's buttons (`continue` — run again with the
+   same parameters, `retry` — with its `params`, `cancel` — TERM to the entry); `auto` — the screen just waits.
+   An error: its text, «подробности» (the last log lines), «повторить» when `retry`. Hung (going and the
+   heartbeat older than three intervals) — said in words, with «повторить».
+5. **Result** → an «агент» record: name and «за что отвечает» from `result.role`, links from `result.links`.
+
+In the block, an install that is going shows «устанавливается: <step>» and «ждёт» when a step waits for the
+owner (the last read state: no reads while the screen is closed). A newer format or no installer — a message
+and the launch document. Setting «Вход установщика сотрудника на машине» — the entry's command (default
+`vallis-install`).
+
 ### 0.4.5: the role's thread title «Name — project»
 
 For a role with the switch «Вести название треда» on (default for an orchestrator; off for
