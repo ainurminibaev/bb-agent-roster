@@ -474,7 +474,7 @@ describe("0.3.3: expanded record — live executors first, archived folded", () 
   });
 });
 
-describe("0.4.1: hovering a record moves nothing", () => {
+describe("0.4.3: no element takes place only for the hover", () => {
   it("no title on the record, no «go to project» icon in the row, nothing appears in the row's flow on hover", async () => {
     machineTabsSidebar();
     const scripts = await mountPluginContentScripts(app, { pluginId: "agent-roster" });
@@ -490,9 +490,15 @@ describe("0.4.1: hovering a record moves nothing", () => {
       expect(line.querySelector("[data-agent-roster-reveal]")).toBeNull();
       // Every element of the row is in the flow from the start: no `hidden` that turns into `flex` on hover.
       for (const el of line.querySelectorAll("*")) expect((el.getAttribute("class") ?? "").split(/\s+/)).not.toContain("hidden");
-      const menu = line.querySelector("[data-agent-roster-menu-button]")!;
-      expect(menu.getAttribute("class")).toContain("invisible");
-      expect(menu.getAttribute("class")).toContain("group-hover/role:visible");
+      // «⋯» takes no place only for the hover: it sits in an absolute layer over the state cell (mouse),
+      // invisible until hover; the state cell is the row's last element in the flow.
+      const slot = line.querySelector("[data-agent-roster-menu-slot]")!;
+      const cls = (slot.getAttribute("class") ?? "").split(/\s+/);
+      expect(cls).toEqual(expect.arrayContaining(["absolute", "invisible", "group-hover/role:visible"]));
+      const nameLine = line.querySelector("[data-agent-roster-name-line]")!;
+      const flow = Array.from(nameLine.children).filter((c) => !(c.getAttribute("class") ?? "").split(/\s+/).includes("absolute"));
+      expect(flow.at(-1)!.hasAttribute("data-agent-roster-trailing")).toBe(true);
+      expect(flow.at(-2)!.hasAttribute("data-agent-roster-toggle")).toBe(true);
     }
     slot.lifecycle.unmount();
     await scripts.lifecycle.dispose();

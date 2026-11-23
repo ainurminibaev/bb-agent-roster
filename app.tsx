@@ -368,7 +368,7 @@ function RecordMenu({ role, dense, projectId, onWrite }: { role: ResolvedRole; d
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button type="button" aria-label={`Действия: ${role.name}`} data-agent-roster-menu-button=""
-          className={cn("flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-sidebar-foreground data-[state=open]:visible", dense && "invisible group-hover/role:visible group-focus-within/role:visible")}>
+          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-sidebar-foreground">
           <svg viewBox="0 0 24 24" className="size-3.5" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
         </button>
       </DropdownMenuTrigger>
@@ -617,14 +617,22 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
                   ждёт
                 </button>
               ) : null}
-              {threadId ? <BbStatus thread={rows.byId.get(threadId)?.raw} hidden={descendantRows(threadId, rows.rows)} /> : null}
               <button type="button" data-agent-roster-toggle="" aria-label={isOpen ? `Свернуть ${role.name}` : `Раскрыть ${role.name}`} aria-expanded={isOpen}
                 disabled={!canExpand}
                 className="pointer-events-auto relative z-10 flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-sidebar-foreground disabled:opacity-30"
                 onClick={() => toggleExpanded(role.id)}>
                 <svg viewBox="0 0 24 24" className={cn("size-3.5 transition-transform", isOpen && "rotate-90")} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
               </button>
-              <span className="pointer-events-auto relative z-10 flex"><RecordMenu role={role} dense={dense} projectId={projectId} onWrite={() => setWriting(true)} /></span>
+              {/* bb's row order: chevron, then the state cell at the right edge. */}
+              <span data-agent-roster-trailing="" className="flex h-5 w-4 shrink-0 items-center justify-center">
+                {threadId ? <BbStatus thread={rows.byId.get(threadId)?.raw} hidden={descendantRows(threadId, rows.rows)} /> : null}
+              </span>
+              {/* «⋯» takes no place of its own: with a mouse it shows over the state cell on hover, on the row's hover
+                  colour (bb's hover actions do the same); on touch screens it is always shown, in the flow. */}
+              <span data-agent-roster-menu-slot=""
+                className="pointer-events-auto invisible absolute right-0 top-0 z-20 flex h-5 items-center rounded bg-sidebar-accent group-hover/role:visible group-focus-within/role:visible has-[[data-state=open]]:visible [@media(hover:none)]:visible [@media(hover:none)]:static [@media(hover:none)]:bg-transparent">
+                <RecordMenu role={role} dense={dense} projectId={projectId} onWrite={() => setWriting(true)} />
+              </span>
             </span>
             <button type="button" data-agent-roster-status="" disabled={!canExpand} aria-label={`${second}. ${isOpen ? "Свернуть" : "Раскрыть"} исполнителей`}
               className="relative z-10 block h-4 w-full min-w-0 truncate pr-12 text-left text-[11px] leading-4 text-muted-foreground disabled:cursor-default"
