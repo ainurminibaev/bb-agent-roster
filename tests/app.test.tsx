@@ -434,3 +434,42 @@ describe("0.3.2: one crown drawing", () => {
     expect(readFileSync(`${process.cwd()}/icons/crown.svg`, "utf8")).toContain(`d="${CROWN_PATH}"`);
   });
 });
+
+describe("0.3.3: expanded record — live executors first, archived folded", () => {
+  it("shows only live executors (≤7, then «ещё N»); finished and archived behind «архивные (N)», folded on every opening", async () => {
+    machineTabsSidebar();
+    const scripts = await mountPluginContentScripts(app, { pluginId: "agent-roster" });
+    await frame();
+    const live = Array.from({ length: 9 }, (_, i) => ({ ...row(`thr_l${i}`, "thr_site", { status: "active", indicator: "runtime" }), title: `live ${i}` }));
+    const threads = [{ ...row("thr_lead", null), title: "lead" }, { ...row("thr_site", null), title: "site" }, ...live, { ...row("thr_done", "thr_site"), title: "done" }];
+    const slot = renderSlot(app.appOverlays[0]!, {}, {
+      rpc: {
+        roster_list: () => ({ roles: ROLES, launchDocUrl: null }),
+        roster_activity: () => ({}),
+        roster_executors: () => ({ threads: [{ id: "thr_arch", parentThreadId: "thr_site", title: "archived one", status: "idle", isArchived: true }] }),
+      } as never,
+      sidebarThreads: { threads: threads as never },
+    });
+    const host = document.querySelector(`[${HOST_ATTR}]`)!;
+    await waitFor(() => expect(host.querySelector('[data-agent-roster-role="site"]')).not.toBeNull());
+    const site = host.querySelector('[data-agent-roster-role="site"]')!;
+    const toggle = site.querySelector("[data-agent-roster-toggle]") as HTMLButtonElement;
+    if (toggle.getAttribute("aria-expanded") !== "true") act(() => toggle.click());
+    await waitFor(() => expect(site.querySelector("[data-agent-roster-show-finished]")?.textContent).toBe("архивные (2)"));
+    expect(site.querySelectorAll("[data-executor]")).toHaveLength(7);
+    expect(site.querySelector("[data-executor][data-archived]")).toBeNull();
+    expect(site.querySelector('[data-executor="thr_done"]')).toBeNull();
+    expect(site.querySelector("[data-agent-roster-more-live]")!.textContent).toBe("ещё 2");
+    act(() => (site.querySelector("[data-agent-roster-show-finished]") as HTMLButtonElement).click());
+    const group = site.querySelector("[data-agent-roster-archived]")!;
+    expect(Array.from(group.querySelectorAll("[data-executor]")).map((e) => e.getAttribute("data-executor")).sort()).toEqual(["thr_arch", "thr_done"]);
+    // Collapse and open again: the archived group is folded again.
+    act(() => (site.querySelector("[data-agent-roster-toggle]") as HTMLButtonElement).click());
+    act(() => (site.querySelector("[data-agent-roster-toggle]") as HTMLButtonElement).click());
+    await waitFor(() => expect(site.querySelector("[data-agent-roster-show-finished]")).not.toBeNull());
+    expect(site.querySelector("[data-agent-roster-archived]")).toBeNull();
+    slot.lifecycle.unmount();
+    await scripts.lifecycle.dispose();
+    window.localStorage.clear();
+  });
+});

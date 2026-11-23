@@ -18,6 +18,7 @@ import {
   type Binding,
   buildTree,
   executorTree,
+  type ExecutorNode,
   flattenTree,
   KIND_ICON,
   KIND_LABEL,
@@ -343,16 +344,40 @@ function QuickMessage({ role, onDone }: { role: ResolvedRole; onDone: () => void
   );
 }
 
+/** Live rows shown before "ещё N". */
+export const LIVE_LIMIT = 7;
+
+function ExecutorRow({ n, byId, dense, currentThreadId }: { n: ExecutorNode; byId: Map<string, Row>; dense: boolean; currentThreadId: string | null }) {
+  const title = byId.get(n.row.id)?.title ?? n.row.id;
+  return (
+    <li data-executor={n.row.id} data-depth={n.depth} data-state={n.state} data-archived={n.row.isArchived ? "" : undefined} data-active={n.row.id === currentThreadId ? "" : undefined}
+      title={`${title} — ${STATE_LABEL[n.state]}${n.row.isArchived ? " (архив)" : ""}`}
+      className={cn("relative flex items-center gap-1.5 rounded-md text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground", dense ? "h-6" : "h-8", n.row.id === currentThreadId && "bg-sidebar-accent text-sidebar-foreground")}
+      style={{ paddingLeft: `${(dense ? 36 : 40) + (n.depth - 1) * 14}px`, paddingRight: 8 }}>
+      <ThreadLink threadId={n.row.id} href={byId.get(n.row.id)?.href ?? null} label={`Открыть ${title}`} />
+      <span className={cn("pointer-events-none min-w-0 flex-1 truncate", n.row.isArchived && "opacity-70")}>{title}</span>
+      {n.hiddenBelow > 0 ? <span className="pointer-events-none shrink-0 text-[11px]">ещё {n.hiddenBelow}</span> : null}
+      <span className="pointer-events-none flex"><StateMark state={n.state} /></span>
+    </li>
+  );
+}
+
+/**
+ * Executors of a record. By default only live ones, at most LIVE_LIMIT rows
+ * then "ещё N"; finished and archived ones sit behind "архивные (N)" at the
+ * bottom, folded every time the record is opened (state is not remembered).
+ */
 function Executors({ role, rows, dense, others }: { role: ResolvedRole; rows: { rows: Row[]; byId: Map<string, Row> }; dense: boolean; others: string[] }) {
   const rpc = useRpc<typeof rpcContract>();
   const { threadId: currentThreadId } = useBbContext();
-  const [showFinished, setShowFinished] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  const [showAllLive, setShowAllLive] = useState(false);
   const [archived, setArchived] = useState<Row[]>([]);
   const rootId = role.active.kind === "thread" ? role.active.threadId : null;
   useEffect(() => {
-    if (!showFinished || !rootId) { setArchived([]); return; }
+    if (!rootId) return;
     let live = true;
-    rpc.call("roster_executors", { threadId: rootId }).then((r) => {
+    Promise.resolve().then(() => rpc.call("roster_executors", { threadId: rootId })).then((r) => {
       if (!live) return;
       setArchived(r.threads.filter((t) => t.isArchived).map((t) => ({
         id: t.id, parentThreadId: t.parentThreadId, status: t.status, indicator: "none",
@@ -360,49 +385,41 @@ function Executors({ role, rows, dense, others }: { role: ResolvedRole; rows: { 
       })));
     }, () => undefined);
     return () => { live = false; };
-  }, [showFinished, rootId, rpc]);
+  }, [rootId, rpc]);
   const all = useMemo(() => {
     if (archived.length === 0) return rows.rows;
     const known = new Set(rows.rows.map((r) => r.id));
     return [...rows.rows, ...archived.filter((r) => !known.has(r.id))];
   }, [rows.rows, archived]);
   if (!rootId) return null;
-  const nodes = executorTree(rootId, all, showFinished);
-  const finished = executorTree(rootId, rows.rows, true).length - executorTree(rootId, rows.rows, false).length;
+  const liveNodes = executorTree(rootId, rows.rows, false);
+  const liveIds = new Set(liveNodes.map((n) => n.row.id));
+  const doneNodes = executorTree(rootId, all, true).filter((n) => !liveIds.has(n.row.id));
   const byId = new Map(all.map((r) => [r.id, r]));
-  const groupLabel = (text: string) => (
-    <li className="pt-1 text-[11px] text-muted-foreground/80" style={{ paddingLeft: dense ? 36 : 40 }}>{text}</li>
-  );
+  const shownLive = showAllLive ? liveNodes : liveNodes.slice(0, LIVE_LIMIT);
+  const pad = { paddingLeft: dense ? 36 : 40 };
+  const groupLabel = (text: string) => <li className="pt-1 text-[11px] text-muted-foreground/80" style={pad}>{text}</li>;
   return (
     <ul data-agent-roster-executors="" className="flex flex-col">
       {groupLabel("под управлением")}
-      {nodes.map((n) => (
-        <li key={n.row.id} data-executor={n.row.id} data-depth={n.depth} data-state={n.state} data-active={n.row.id === currentThreadId ? "" : undefined}
-          title={`${(byId.get(n.row.id) as Row | undefined)?.title ?? n.row.id} — ${STATE_LABEL[n.state]}${n.row.isArchived ? " (архив)" : ""}`}
-          className={cn("relative flex items-center gap-1.5 rounded-md text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground", dense ? "h-6" : "h-8", n.row.id === currentThreadId && "bg-sidebar-accent text-sidebar-foreground")}
-          style={{ paddingLeft: `${(dense ? 36 : 40) + (n.depth - 1) * 14}px`, paddingRight: 8 }}>
-          <ThreadLink threadId={n.row.id} href={(byId.get(n.row.id) as Row | undefined)?.href ?? null} label={`Открыть ${(byId.get(n.row.id) as Row | undefined)?.title ?? n.row.id}`} />
-          <span className={cn("pointer-events-none min-w-0 flex-1 truncate", n.row.isArchived && "line-through opacity-70")}>{(byId.get(n.row.id) as Row | undefined)?.title ?? n.row.id}</span>
-          {n.hiddenBelow > 0 ? <span className="pointer-events-none shrink-0 text-[11px]">ещё {n.hiddenBelow}</span> : null}
-          <span className="pointer-events-none flex"><StateMark state={n.state} /></span>
-        </li>
-      ))}
-      {nodes.length === 0 ? (
-        <li className="truncate py-0.5 text-[12px] text-muted-foreground/80" style={{ paddingLeft: dense ? 36 : 40 }}>{showFinished ? "исполнителей нет" : "сейчас никто не работает"}</li>
+      {shownLive.map((n) => <ExecutorRow key={n.row.id} n={n} byId={byId} dense={dense} currentThreadId={currentThreadId} />)}
+      {liveNodes.length === 0 ? <li className="truncate py-0.5 text-[12px] text-muted-foreground/80" style={pad}>сейчас никто не работает</li> : null}
+      {liveNodes.length > shownLive.length ? (
+        <li><button type="button" data-agent-roster-more-live="" className="block w-full truncate py-0.5 text-left text-[11px] text-muted-foreground underline-offset-2 hover:underline" style={pad}
+          onClick={() => setShowAllLive(true)}>ещё {liveNodes.length - shownLive.length}</button></li>
       ) : null}
-      <li>
-        <button type="button" data-agent-roster-show-finished="" className="block w-full truncate py-0.5 text-left text-[11px] text-muted-foreground/80 underline-offset-2 hover:underline" style={{ paddingLeft: dense ? 36 : 40 }}
-          onClick={() => setShowFinished((v) => !v)}>
-          {showFinished ? "скрыть завершённые" : `завершённые и архивные${finished > 0 ? ` (${finished}+)` : ""}`}
-        </button>
-      </li>
+      {doneNodes.length > 0 ? (
+        <li><button type="button" data-agent-roster-show-finished="" aria-expanded={showArchived} className="block w-full truncate py-0.5 text-left text-[11px] text-muted-foreground/80 underline-offset-2 hover:underline" style={pad}
+          onClick={() => setShowArchived((v) => !v)}>{showArchived ? "скрыть архивные" : `архивные (${doneNodes.length})`}</button></li>
+      ) : null}
+      {showArchived ? <li><ul data-agent-roster-archived="" className="flex flex-col">{doneNodes.map((n) => <ExecutorRow key={n.row.id} n={n} byId={byId} dense={dense} currentThreadId={currentThreadId} />)}</ul></li> : null}
       {others.length > 0 ? (
         <>
           {groupLabel("не под управлением")}
           {others.map((id) => (
             <li key={id} data-unmanaged={id} data-active={id === currentThreadId ? "" : undefined} title={`${rows.byId.get(id)?.title ?? id} — работает, не под управлением роли`}
               className={cn("relative flex items-center gap-1.5 rounded-md text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground", dense ? "h-6" : "h-8", id === currentThreadId && "bg-sidebar-accent text-sidebar-foreground")}
-              style={{ paddingLeft: dense ? 36 : 40, paddingRight: 8 }}>
+              style={{ ...pad, paddingRight: 8 }}>
               <ThreadLink threadId={id} href={rows.byId.get(id)?.href ?? null} label={`Открыть ${rows.byId.get(id)?.title ?? id}`} />
               <span className="pointer-events-none min-w-0 flex-1 truncate">{rows.byId.get(id)?.title ?? id}</span>
               <span className="pointer-events-none flex"><StateMark state="running" /></span>
