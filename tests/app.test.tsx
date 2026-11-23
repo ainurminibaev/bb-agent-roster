@@ -393,21 +393,21 @@ describe("0.2.1: go to project and the role icon", () => {
     expect(revealProject("p1")).toBe(true);
     expect(scrolled).toBe(1);
   });
-  it("composite icon: the project logo wears the crown on top; no logo — the crown alone; the main record's crown is gold and larger", () => {
+  it("composite icon: the logo wears a 10px crown on its axis; no logo — one crown; the main record's crown is gold and larger; one drawing", () => {
+    const visible = (el: Element) => (Number(el.getAttribute("width")) * 12) / 14;
     const withLogo = renderSlot({ component: RoleIcon as never }, { role: { icon: "", kind: "orchestrator" }, logo: "data:image/svg+xml;base64,AA" } as never);
     expect(withLogo.container.querySelectorAll("[data-role-icon]")).toHaveLength(1);
     expect(withLogo.container.querySelector("img")!.getAttribute("style")).toContain("grayscale(1)");
-    expect(withLogo.container.querySelector('[data-crown="top"] svg')!.getAttribute("width")).toBe("22");
+    expect(visible(withLogo.container.querySelector('[data-crown="top"] svg')!)).toBeCloseTo(10);
     withLogo.lifecycle.unmount();
     const plain = renderSlot({ component: RoleIcon as never }, { role: { icon: "", kind: "agent" }, logo: null } as never);
-    expect(plain.container.querySelector("img")).toBeNull();
-    expect(plain.container.querySelector('[data-crown="alone"] svg')!.getAttribute("width")).toBe("32");
+    expect(visible(plain.container.querySelector('[data-crown="alone"] svg')!)).toBeCloseTo(18);
     plain.lifecycle.unmount();
     const main = renderSlot({ component: RoleIcon as never }, { role: { icon: "", kind: "agent", primary: true }, logo: "data:image/svg+xml;base64,AA", telegram: "Telegram: чат" } as never);
     expect(main.container.querySelector("img")).toBeNull();
-    const crown = main.container.querySelector('[data-crown="alone"]') as HTMLElement;
-    expect(crown.getAttribute("style")).toContain("color");
-    expect(crown.querySelector("svg")!.getAttribute("width")).toBe("32");
+    const svg = main.container.querySelector('[data-crown="alone"] svg')!;
+    expect(visible(svg)).toBeCloseTo(21);
+    expect(svg.innerHTML).toContain("#e8c24a");
     expect(main.container.querySelector("[data-telegram-corner]")!.getAttribute("title")).toBe("Telegram: чат");
     main.lifecycle.unmount();
   });

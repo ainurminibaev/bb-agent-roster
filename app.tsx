@@ -155,44 +155,71 @@ export function ChannelMark({ label }: { label: string }) {
 /** The only colour the plugin draws: the main record's crown — one calm gold for light and dark themes. */
 export const GOLD = "#c9a227";
 
-export const CROWN_PATH = "M3 8l4.5 4L12 5l4.5 7L21 8l-2 11H5z";
 const TELEGRAM_PATH = "M21.4 3.6 2.9 10.8c-1.2.5-1.2 1.2-.2 1.5l4.7 1.5 1.8 5.6c.2.6.4.8.9.8.4 0 .6-.2.9-.4l2.3-2.2 4.8 3.5c.9.5 1.5.2 1.7-.8L22.9 5c.3-1.3-.5-1.9-1.5-1.4Z";
 
 function Glyph({ path, size, className, style }: { path: string; size: number; className?: string; style?: React.CSSProperties }) {
   return <svg viewBox="0 0 24 24" width={size} height={size} fill="currentColor" aria-hidden="true" className={className} style={style}><path d={path} /></svg>;
 }
 
+const CROWN_VIEWBOX = "-1 -0.5 14 11.5";
+/** The crown outline; also the declared icon `agent-roster/crown` (icons/crown.svg). */
+export const CROWN_PATH = "M1 4.2 3.3 6.2 6 1.8 8.7 6.2 11 4.2 9.8 10H2.2Z";
+const CROWN_OUTLINE = CROWN_PATH;
+const CROWN_BODY = "M1 4.2 3.3 6.2 6 1.8 8.7 6.2 11 4.2 10.1 8.2H1.9Z";
+const CROWN_BAND = "M1.9 8.2H10.1L9.8 10H2.2Z";
+const CROWN_TIPS = [[1, 4], [6, 1.6], [11, 4]] as const;
+const GOLD_HI = "#e8c24a";
+const GOLD_LO = "#8f6c0e";
+
 /**
- * The record's sign, 28px, the same idea as its thread's icon in the list: the
- * project's logo (monochrome, 16px) wearing the crown — the crown sits on it,
- * overlapping by a pixel. The main record is a large gold crown of the same
- * footprint; without a logo, a large neutral crown. A Telegram channel adds a
- * small plane in the bottom-right corner. An external employee keeps the link.
- * One crown drawing everywhere; only size and tone differ.
+ * The crown — the same drawing as on thread rows (Machine Tabs): two tones,
+ * balls on the points, a thin contour in the background colour. `width` is the
+ * crown's visible width in px.
+ */
+export function Crown({ width, gold, className }: { width: number; gold?: boolean; className?: string }) {
+  const k = width / 12;
+  const halo = 1.1 / k;
+  const hi = gold ? GOLD_HI : "color-mix(in srgb, var(--sidebar-foreground) 32%, var(--sidebar))";
+  const lo = gold ? GOLD_LO : "color-mix(in srgb, var(--sidebar-foreground) 82%, transparent)";
+  return (
+    <svg data-crown-drawing="" viewBox={CROWN_VIEWBOX} width={14 * k} height={11.5 * k} aria-hidden="true" className={className}>
+      <path d={CROWN_OUTLINE} fill="none" stroke="var(--sidebar)" strokeWidth={2 * halo} strokeLinejoin="round" />
+      {CROWN_TIPS.map(([x, y]) => <circle key={x} cx={x} cy={y} r={0.95 + halo} fill="var(--sidebar)" />)}
+      <path d={CROWN_BODY} fill={hi} stroke={lo} strokeWidth=".45" strokeLinejoin="round" />
+      <path d={CROWN_BAND} fill={lo} />
+      {CROWN_TIPS.map(([x, y]) => <circle key={`b${x}`} cx={x} cy={y} r=".95" fill={hi} stroke={lo} strokeWidth=".35" />)}
+    </svg>
+  );
+}
+
+/**
+ * The record's sign, 24×22: the project logo (16px) wearing the crown — on the
+ * logo's axis, a third of the crown over its top — the same sign as on the
+ * role's thread rows, only larger. The main record is one larger gold crown.
+ * A Telegram channel adds a small plane bottom right, no plate. An external
+ * employee keeps the link.
  */
 export function RoleIcon({ role, className, logo, telegram }: { role: { icon: string; kind: RoleKind; primary?: boolean }; className?: string; logo?: string | null; telegram?: string | null }) {
   const external = role.kind === "external";
   const base = !external && !role.primary && (role.icon || logo) ? (role.icon ? "icon" : "logo") : null;
   return (
     <span data-role-icon="" data-primary={role.primary ? "" : undefined} data-base={base ?? (external ? "link" : "crown")}
-      className={cn("relative block size-7 shrink-0 text-muted-foreground", className)} aria-hidden="true">
-      {external ? <span className="flex size-7 items-center justify-center"><Icon name={KIND_ICON.external} className="size-5" /></span>
+      className={cn("relative block h-[22px] w-6 shrink-0 text-muted-foreground", className)} aria-hidden="true">
+      {external ? <span className="flex h-[22px] w-6 items-center justify-center"><Icon name={KIND_ICON.external} className="size-4" /></span>
         : base ? (
           <>
             {base === "icon"
-              ? <span className="absolute left-[6px] top-[12px] flex size-4 items-center justify-center text-[14px] leading-none">{role.icon}</span>
-              : <img src={logo!} alt="" className="absolute left-[6px] top-[12px] size-4 object-contain opacity-80" style={{ filter: "grayscale(1)" }} />}
-            <span data-crown="top" className="absolute left-[3px] top-[-4.4px] leading-[0] text-sidebar-foreground/85">
-              <Glyph path={CROWN_PATH} size={22} />
-            </span>
+              ? <span className="absolute left-1 top-1.5 flex size-4 items-center justify-center text-[14px] leading-none">{role.icon}</span>
+              : <img src={logo!} alt="" className="absolute left-1 top-1.5 size-4 object-contain opacity-85" style={{ filter: "grayscale(1)" }} />}
+            <span data-crown="top" className="absolute left-[6.2px] top-0 leading-[0]"><Crown width={10} /></span>
           </>
         )
-        : <span data-crown="alone" className={cn("absolute left-[-2px] top-[-2px] leading-[0]", !role.primary && "text-sidebar-foreground/85")} style={role.primary ? { color: GOLD } : undefined}>
-            <Glyph path={CROWN_PATH} size={32} />
-          </span>}
+        : <span data-crown="alone" className="absolute left-[-1px] top-0 leading-[0]"><Crown width={role.primary ? 21 : 18} gold={role.primary} /></span>}
       {telegram ? (
-        <span data-telegram-corner="" title={telegram} className="absolute -bottom-px -right-0.5 flex size-3 items-center justify-center rounded-full bg-sidebar">
-          <Glyph path={TELEGRAM_PATH} size={9} />
+        <span data-telegram-corner="" title={telegram} className="absolute -right-1 bottom-0 flex size-[11px] items-center justify-center pb-px">
+          <svg viewBox="0 0 24 24" width={10} height={10} aria-hidden="true" style={{ overflow: "visible" }}>
+            <path d={TELEGRAM_PATH} fill="currentColor" stroke="var(--sidebar)" strokeWidth={3} strokeLinejoin="round" paintOrder="stroke" />
+          </svg>
         </span>
       ) : null}
     </span>
@@ -489,7 +516,7 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
       <HoverCard openDelay={900} closeDelay={120}>
         <HoverCardTrigger asChild>
           <div data-agent-roster-line="" title={short}
-            className={cn("group/role relative flex items-center gap-2 rounded-md py-1.5 pr-1 hover:bg-sidebar-accent", active && "bg-sidebar-accent")}
+            className={cn("group/role relative flex items-center gap-2 rounded-md py-0.5 pr-1 hover:bg-sidebar-accent", active && "bg-sidebar-accent")}
             style={{ paddingLeft: leftPad }}>
             {threadId ? (
               <ThreadLink threadId={threadId} href={rows.byId.get(threadId)?.href ?? null} label={`Открыть ${role.name}`} />

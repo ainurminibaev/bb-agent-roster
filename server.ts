@@ -477,7 +477,7 @@ export default async function plugin(bb: BbPluginApi) {
         const m = rowMarkFor(roles, threadId);
         if (!m || m.roleId !== role.id) continue;
         // The crown is worn over the thread's icon; the main record's is gold and larger.
-        marks.push({ threadId, glyph: m.glyph, tone: m.reserve ? "muted" : m.tone, place: m.glyph === "crown" ? "top" : "corner", size: role.primary ? "large" : "normal", label: m.label });
+        marks.push({ threadId, glyph: m.glyph, tone: m.reserve ? "muted" : m.tone, place: m.glyph === "crown" ? "top" : "corner", size: "normal", label: m.label }); // one crown size on every row
       }
       // A Telegram channel: a small plane in the corner of the active thread's icon.
       const channel = (role.channels ?? []).find((c) => c.kind === "telegram");

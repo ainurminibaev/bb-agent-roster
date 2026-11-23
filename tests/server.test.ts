@@ -219,7 +219,8 @@ describe("part B: role marks on thread icons through Machine Tabs", () => {
     const last = () => Object.fromEntries(sent.at(-1)!.marks.map((m) => [m.threadId, `${m.glyph}/${m.tone}`]));
     expect(last()).toEqual({ thr_a: "crown/accent", thr_b: "crown/muted", thr_c: "crown/neutral" });
     const byThread = Object.fromEntries(sent.at(-1)!.marks.map((m) => [m.threadId, m as unknown as { place: string; size: string }]));
-    expect(byThread.thr_a).toMatchObject({ place: "top", size: "large" });
+    // One crown size on every row, grey or gold; gold is larger only in the block.
+    expect(byThread.thr_a).toMatchObject({ place: "top", size: "normal" });
     expect(byThread.thr_c).toMatchObject({ place: "top", size: "normal" });
     await cli(h, ["set-thread", "orch", "thr_d"]);
     await h.harness.behavior.callRpc("roster_list", null);
