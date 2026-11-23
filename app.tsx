@@ -18,10 +18,11 @@ import {
 import type { rpcContract } from "./server";
 import {
   type Binding,
-  buildTree,
   executorTree,
   type ExecutorNode,
-  flattenTree,
+  mergeOrder,
+  orderRoles,
+  visibleRecords,
   KIND_ICON,
   KIND_LABEL,
   MODULE_NAME,
@@ -63,7 +64,7 @@ let inflight: Promise<void> | null = null;
 function refresh(rpc: Rpc): Promise<void> {
   inflight ??= rpc
     .call("roster_list", null)
-    .then((r) => setState({ roles: r.roles as ResolvedRole[], launchDocUrl: r.launchDocUrl, iconMarks: r.iconMarks === true }))
+    .then((r) => setState({ roles: r.roles as ResolvedRole[], launchDocUrl: r.launchDocUrl, iconMarks: r.iconMarks === true, blockLimit: typeof r.blockLimit === "number" && r.blockLimit > 0 ? r.blockLimit : 5 }))
     .catch(() => undefined)
     .finally(() => { inflight = null; });
   return inflight;
@@ -93,6 +94,8 @@ export interface Row extends RowFacts {
   href: string | null;
   /** bb's own row, for bb's status glyph; absent for archived rows read from the server. */
   raw?: PluginSidebarThread;
+  /** Latest activity (bb's update or attention time), for the block's order. */
+  activeAt?: number;
 }
 function useRows(): { rows: Row[]; byId: Map<string, Row> } {
   const { threads } = experimental_useSidebarThreads();
@@ -109,6 +112,7 @@ function useRows(): { rows: Row[]; byId: Map<string, Row> } {
       projectId: typeof t.projectId === "string" ? t.projectId : null,
       href: typeof t.href === "string" ? t.href : null,
       raw: t,
+      activeAt: Math.max(Number(t.updatedAt) || 0, Number(t.latestAttentionAt) || 0),
     }));
     return { rows, byId: new Map(rows.map((r) => [r.id, r])) };
   }, [threads]);
@@ -459,25 +463,44 @@ function QuickMessage({ role, onDone }: { role: ResolvedRole; onDone: () => void
 /** Live rows shown before "ещё N". */
 export const LIVE_LIMIT = 7;
 
+/** Service lines of the block (group labels, «ещё N», «архивные (N)», empty state, «Показать ещё»): one font, Machine Tabs' pager. */
+const SERVICE_TEXT = "text-[9.5px] leading-[14px] text-muted-foreground";
+
+function ServiceChevron({ open }: { open: boolean }) {
+  return <svg viewBox="0 0 24 24" className={cn("size-2.5 shrink-0 transition-transform", open && "rotate-90")} fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>;
+}
+
+/** An expandable service line: chevron that shows the state, hover highlight, pointer. */
+function ServiceToggle({ open, onToggle, children, className, ...data }: { open: boolean; onToggle: () => void; children: ReactNode; className?: string } & Record<`data-${string}`, string>) {
+  return (
+    <button type="button" aria-expanded={open} {...data} onClick={onToggle}
+      className={cn(SERVICE_TEXT, "inline-flex cursor-pointer items-center gap-0.5 rounded px-1 text-left hover:bg-sidebar-accent hover:text-sidebar-foreground", className)}>
+      <ServiceChevron open={open} />{children}
+    </button>
+  );
+}
+
 function ExecutorRow({ n, byId, dense, currentThreadId }: { n: ExecutorNode; byId: Map<string, Row>; dense: boolean; currentThreadId: string | null }) {
   const title = byId.get(n.row.id)?.title ?? n.row.id;
+  const raw = byId.get(n.row.id)?.raw;
   return (
     <li data-executor={n.row.id} data-depth={n.depth} data-state={n.state} data-archived={n.row.isArchived ? "" : undefined} data-active={n.row.id === currentThreadId ? "" : undefined}
       title={`${title} — ${STATE_LABEL[n.state]}${n.row.isArchived ? " (архив)" : ""}`}
-      className={cn("relative flex cursor-pointer items-center gap-1.5 rounded-md text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground", dense ? "h-6" : "h-8", n.row.id === currentThreadId && "bg-sidebar-accent text-sidebar-foreground")}
-      style={{ paddingLeft: `${(dense ? 36 : 40) + (n.depth - 1) * 14}px`, paddingRight: 8 }}>
+      className={cn("relative flex cursor-pointer items-center gap-2 rounded-md text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground", dense ? "h-6" : "h-7", n.row.id === currentThreadId && "bg-sidebar-accent text-sidebar-foreground")}
+      style={{ paddingLeft: `${8 + (n.depth - 1) * 12}px` }}>
       <ThreadLink threadId={n.row.id} href={byId.get(n.row.id)?.href ?? null} label={`Открыть ${title}`} />
       <span className={cn("pointer-events-none min-w-0 flex-1 truncate", n.row.isArchived && "opacity-70")}>{title}</span>
-      {n.hiddenBelow > 0 ? <span className="pointer-events-none shrink-0 text-[11px]">ещё {n.hiddenBelow}</span> : null}
-      <span className="pointer-events-none flex"><BbStatus thread={byId.get(n.row.id)?.raw} archived={n.row.isArchived} /></span>
+      {n.hiddenBelow > 0 ? <span className="pointer-events-none shrink-0 text-[11px] tabular-nums" aria-label={`и ещё ${n.hiddenBelow} глубже`}>+{n.hiddenBelow}</span> : null}
+      <span className="pointer-events-none flex h-5 w-7 shrink-0 items-center justify-center"><BbStatus thread={raw} archived={n.row.isArchived} /></span>
     </li>
   );
 }
 
 /**
- * Executors of a record. By default only live ones, at most LIVE_LIMIT rows
- * then "ещё N"; finished and archived ones sit behind "архивные (N)" at the
- * bottom, folded every time the record is opened (state is not remembered).
+ * Executors of a record, nested under it like bb's subthreads (indent + a thin guide).
+ * Live = not archived, idle included — the same rule as the record's ↳N. At most
+ * LIVE_LIMIT rows, then «ещё N»; archived ones behind «архивные (N)», folded each time.
+ * Group labels only when both groups (managed / not managed) are there.
  */
 function Executors({ role, rows, dense, others }: { role: ResolvedRole; rows: { rows: Row[]; byId: Map<string, Row> }; dense: boolean; others: string[] }) {
   const rpc = useRpc<typeof rpcContract>();
@@ -509,32 +532,35 @@ function Executors({ role, rows, dense, others }: { role: ResolvedRole; rows: { 
   const doneNodes = executorTree(rootId, all, true).filter((n) => !liveIds.has(n.row.id));
   const byId = new Map(all.map((r) => [r.id, r]));
   const shownLive = showAllLive ? liveNodes : liveNodes.slice(0, LIVE_LIMIT);
-  const pad = { paddingLeft: dense ? 36 : 40 };
-  const groupLabel = (text: string) => <li className="pt-1 text-[11px] text-muted-foreground/80" style={pad}>{text}</li>;
+  const bothGroups = liveNodes.length > 0 && others.length > 0;
+  const label = (text: string) => <li data-agent-roster-group="" className={cn(SERVICE_TEXT, "px-1 pt-0.5")}>{text}</li>;
+  const archivedToggle = doneNodes.length > 0
+    ? <ServiceToggle data-agent-roster-show-finished="" open={showArchived} onToggle={() => setShowArchived((v) => !v)}>архивные ({doneNodes.length})</ServiceToggle>
+    : null;
   return (
-    <ul data-agent-roster-executors="" className="flex flex-col">
-      {groupLabel("под управлением")}
+    // The whole expanded part belongs to its record: one indent, one guide under the record's icon.
+    <ul data-agent-roster-executors="" className="ml-4 flex flex-col border-l border-sidebar-border pl-px">
+      {liveNodes.length === 0 && others.length === 0 ? (
+        <li data-agent-roster-empty="" className={cn(SERVICE_TEXT, "flex items-center gap-2 px-1 py-0.5")}>
+          <span>исполнителей нет</span>{archivedToggle}
+        </li>
+      ) : null}
+      {bothGroups ? label("под управлением") : null}
       {shownLive.map((n) => <ExecutorRow key={n.row.id} n={n} byId={byId} dense={dense} currentThreadId={currentThreadId} />)}
-      {liveNodes.length === 0 ? <li className="truncate py-0.5 text-[12px] text-muted-foreground/80" style={pad}>сейчас никто не работает</li> : null}
-      {liveNodes.length > shownLive.length ? (
-        <li><button type="button" data-agent-roster-more-live="" className="block w-full truncate py-0.5 text-left text-[11px] text-muted-foreground underline-offset-2 hover:underline" style={pad}
-          onClick={() => setShowAllLive(true)}>ещё {liveNodes.length - shownLive.length}</button></li>
+      {liveNodes.length > LIVE_LIMIT ? (
+        <li><ServiceToggle data-agent-roster-more-live="" open={showAllLive} onToggle={() => setShowAllLive((v) => !v)}>{showAllLive ? "свернуть" : `ещё ${liveNodes.length - shownLive.length}`}</ServiceToggle></li>
       ) : null}
-      {doneNodes.length > 0 ? (
-        <li><button type="button" data-agent-roster-show-finished="" aria-expanded={showArchived} className="block w-full truncate py-0.5 text-left text-[11px] text-muted-foreground/80 underline-offset-2 hover:underline" style={pad}
-          onClick={() => setShowArchived((v) => !v)}>{showArchived ? "скрыть архивные" : `архивные (${doneNodes.length})`}</button></li>
-      ) : null}
+      {(liveNodes.length > 0 || others.length > 0) && archivedToggle ? <li>{archivedToggle}</li> : null}
       {showArchived ? <li><ul data-agent-roster-archived="" className="flex flex-col">{doneNodes.map((n) => <ExecutorRow key={n.row.id} n={n} byId={byId} dense={dense} currentThreadId={currentThreadId} />)}</ul></li> : null}
       {others.length > 0 ? (
         <>
-          {groupLabel("не под управлением")}
+          {bothGroups ? label("не под управлением") : null}
           {others.map((id) => (
             <li key={id} data-unmanaged={id} data-active={id === currentThreadId ? "" : undefined} title={`${rows.byId.get(id)?.title ?? id} — работает, не под управлением роли`}
-              className={cn("relative flex cursor-pointer items-center gap-1.5 rounded-md text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground", dense ? "h-6" : "h-8", id === currentThreadId && "bg-sidebar-accent text-sidebar-foreground")}
-              style={{ ...pad, paddingRight: 8 }}>
+              className={cn("relative flex cursor-pointer items-center gap-2 rounded-md pl-2 text-[13px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground", dense ? "h-6" : "h-7", id === currentThreadId && "bg-sidebar-accent text-sidebar-foreground")}>
               <ThreadLink threadId={id} href={rows.byId.get(id)?.href ?? null} label={`Открыть ${rows.byId.get(id)?.title ?? id}`} />
               <span className="pointer-events-none min-w-0 flex-1 truncate">{rows.byId.get(id)?.title ?? id}</span>
-              <span className="pointer-events-none flex"><BbStatus thread={rows.byId.get(id)?.raw} /></span>
+              <span className="pointer-events-none flex h-5 w-7 shrink-0 items-center justify-center"><BbStatus thread={rows.byId.get(id)?.raw} /></span>
             </li>
           ))}
         </>
@@ -595,7 +621,6 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
   const canExpand = threadId !== null;
   const active = threadId !== null && threadId === currentThreadId;
   const second = activity ?? (role.active.kind === "external" ? "в другом BB — откроется ссылка" : summaryLabel(summary));
-  const leftPad = dense ? 4 : 8;
   const projectName = useProjectName(role, rows);
   const projectId = useProjectId(role, rows);
   const projectLogo = useProjectLogo(projectId);
@@ -606,8 +631,7 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
         <HoverCardTrigger asChild>
           <div data-agent-roster-line=""
             onPointerMove={(e) => { if (!cardOpen) pointerX.current = Math.max(0, e.clientX - e.currentTarget.getBoundingClientRect().left); }}
-            className={cn("group/role relative flex cursor-pointer items-center gap-2 rounded-md py-0.5 pr-1 hover:bg-sidebar-accent", active && "bg-sidebar-accent")}
-            style={{ paddingLeft: leftPad }}>
+            className={cn("group/role relative flex cursor-pointer items-center gap-1 rounded-md py-0.5 pl-1 hover:bg-sidebar-accent", active && "bg-sidebar-accent")}>
             {threadId ? (
               <ThreadLink threadId={threadId} href={rows.byId.get(threadId)?.href ?? null} label={`Открыть ${role.name}`} />
             ) : (
@@ -639,7 +663,7 @@ function RoleRow({ node, rows, activity, dense }: RowProps) {
                 <svg viewBox="0 0 24 24" className={cn("size-3.5 transition-transform", isOpen && "rotate-90")} fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
               </button>
               {/* bb's row order: chevron, then the state cell at the right edge. */}
-              <span data-agent-roster-trailing="" className="flex h-5 w-4 shrink-0 items-center justify-center">
+              <span data-agent-roster-trailing="" className="flex h-5 w-7 shrink-0 items-center justify-center">
                 {threadId ? <BbStatus thread={rows.byId.get(threadId)?.raw} hidden={descendantRows(threadId, rows.rows)} /> : null}
               </span>
               {/* «⋯» takes no place of its own: with a mouse it shows over the state cell on hover, on the row's hover
@@ -709,13 +733,12 @@ const CardOpen = createContext(false);
 /** One counter style, like bb's "↳N": own · others while work runs, else the muted total. */
 function Counter({ own, others, total }: { own: number; others: number; total: number }) {
   const cardOpen = useContext(CardOpen);
-  if (own + others > 0) {
-    const text = own === 0 ? `· ${others}` : others > 0 ? `↳${own} · ${others}` : `↳${own}`;
-    const aria = own === 0 ? `не под управлением работают: ${others}` : `работают: свои ${own}${others > 0 ? `, чужие ${others}` : ""}`;
-    return <span data-agent-roster-work="" title={cardOpen ? undefined : aria} aria-label={aria} className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{text}</span>;
-  }
-  if (total > 0) return <span data-agent-roster-total="" aria-label={`исполнителей ${total}`} className="shrink-0 text-[11px] tabular-nums text-muted-foreground/70">↳{total}</span>;
-  return null;
+  // ↳N is the number of executor rows the expanded record lists (live = not archived, idle included);
+  // "· M" — threads of the project working outside the role, listed under «не под управлением».
+  if (total + others === 0) return null;
+  const text = total === 0 ? `· ${others}` : others > 0 ? `↳${total} · ${others}` : `↳${total}`;
+  const aria = [total > 0 ? `исполнителей ${total}, из них работают ${own}` : null, others > 0 ? `не под управлением работают ${others}` : null].filter(Boolean).join("; ");
+  return <span data-agent-roster-total="" data-count={total} title={cardOpen ? undefined : aria} aria-label={aria} className={cn("shrink-0 text-[11px] tabular-nums", own + others > 0 ? "text-muted-foreground" : "text-muted-foreground/70")}>{text}</span>;
 }
 
 /** Details of a record: the long-hover card and the "Сведения" dialog show the same. */
@@ -782,20 +805,77 @@ function useOpenRole() {
   }, [navigate]);
 }
 
+/** How often the block may reorder itself (not while the pointer is over it or a record is open). */
+const REORDER_MS = 45_000;
+
+function anyExpanded(ids: readonly string[]): boolean {
+  return ids.some((id) => expanded.has(id));
+}
+
+/** Latest activity of a record: its active thread and that thread's live executors. */
+function recordActiveAt(role: ResolvedRole, rows: readonly Row[], byId: ReadonlyMap<string, Row>): number {
+  if (role.active.kind !== "thread") return 0;
+  const rootId = role.active.threadId;
+  let at = byId.get(rootId)?.activeAt ?? 0;
+  for (const r of descendantRows(rootId, rows)) if (!r.isArchived) at = Math.max(at, (r as Row).activeAt ?? 0);
+  return at;
+}
+
 function RosterTree({ dense }: { dense: boolean; editable?: boolean }) {
   const roles = useRoles();
   const rows = useRows();
-  // Roles stand side by side; only a record's executors nest under it.
-  const flat = useMemo(() => flattenTree(buildTree((roles ?? []).map((r) => ({ ...r, parentId: null })))), [roles]);
+  const limit = useStore((s) => s.blockLimit);
   const activity = useActivity(roles ?? [], rows.byId);
+  const [showAll, setShowAll] = useState(false);
+  const hovered = useRef(false);
+  // Fresh order: main record first, then by activity; it is applied at most every REORDER_MS
+  // and never under the pointer or with a record open, so rows do not jump while being read.
+  const fresh = useMemo(() => orderRoles(roles ?? [], (r) => recordActiveAt(r, rows.rows, rows.byId)).map((r) => r.id), [roles, rows]);
+  const freshRef = useRef(fresh);
+  freshRef.current = fresh;
+  const [applied, setApplied] = useState<string[]>([]);
+  useEffect(() => {
+    const apply = () => {
+      if (hovered.current || anyExpanded(freshRef.current)) return;
+      setApplied((prev) => (prev.join() === freshRef.current.join() ? prev : freshRef.current));
+    };
+    apply();
+    const timer = window.setInterval(apply, REORDER_MS);
+    return () => window.clearInterval(timer);
+  }, []);
   if (roles === null) return null;
+  const byRole = new Map(roles.map((r) => [r.id, r]));
+  const order = mergeOrder(applied, fresh).filter((id) => byRole.has(id));
+  // A record that waits for the owner or failed is never hidden under «Показать ещё».
+  const mustShow = new Set(roles.filter((r) => {
+    const st = summarize(r.active, rows.rows, rows.byId);
+    return st.state === "waiting" || st.state === "error" || st.errors > 0;
+  }).map((r) => r.id));
+  const { shown, hidden } = dense ? visibleRecords(order, limit, mustShow, showAll) : { shown: order, hidden: 0 };
+  const pager = dense && (hidden > 0 || (showAll && order.length > limit));
   return (
-    <ul className="flex flex-col" aria-label={MODULE_NAME}>
-      {flat.map((node) => (
-        <RoleRow key={node.role.id} node={node} rows={rows} dense={dense}
-          activity={node.role.active.kind === "thread" ? activity[node.role.active.threadId] ?? null : null} />
-      ))}
-    </ul>
+    <>
+      <ul className={cn("flex flex-col", dense && "pl-2.5")} aria-label={MODULE_NAME}
+        onPointerEnter={() => { hovered.current = true; }} onPointerLeave={() => { hovered.current = false; }}>
+        {shown.map((id) => {
+          const role = byRole.get(id)!;
+          return (
+            <RoleRow key={id} node={{ role, depth: 0, children: [] }} rows={rows} dense={dense}
+              activity={role.active.kind === "thread" ? activity[role.active.threadId] ?? null : null} />
+          );
+        })}
+      </ul>
+      {pager ? (
+        <div data-agent-roster-pager="" className={cn(SERVICE_TEXT, "flex items-center gap-3 pl-2.5 pr-3 pt-0.5")}>
+          <button type="button" data-agent-roster-show-more="" aria-expanded={showAll}
+            className="inline-flex cursor-pointer items-center gap-[3px] rounded px-0.5 underline-offset-2 hover:text-sidebar-foreground hover:underline"
+            onClick={() => setShowAll((v) => !v)}>
+            {showAll ? "↑ Свернуть" : "↓ Показать ещё"}
+          </button>
+          <span data-agent-roster-page-count="" className="ml-auto text-[9px] tabular-nums opacity-70">{showAll ? order.length : order.length - hidden} / {order.length}</span>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -807,8 +887,9 @@ export function SidebarBlock() {
   const navigate = useBbNavigate();
   if (roles === null) return null;
   return (
-    <section data-agent-roster-section="" aria-label={MODULE_NAME} className="mx-2 mb-1.5 mt-1 border-b border-border pb-1.5">
-      <div className="flex h-7 items-center px-2 text-xs font-medium text-muted-foreground">
+    <section data-agent-roster-section="" aria-label={MODULE_NAME} className="mb-1.5 ml-2 mt-1 border-b border-border pb-1.5">
+      {/* The same header line as bb's «Last 5»: x, size, weight and colour. */}
+      <div data-agent-roster-header="" className="flex h-6 items-center px-1 text-xs font-semibold text-sidebar-foreground">
         <button type="button" className="flex-1 truncate text-left hover:text-sidebar-foreground" onClick={() => navigate.toPluginPanel(PANEL_PATH)}>
           {MODULE_NAME}
         </button>

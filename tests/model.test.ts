@@ -192,19 +192,29 @@ describe("0.2: summary and executors", () => {
     const own = [r("o", null, { indicator: "waiting-for-input" }), r("q", "o", { hasPendingInteraction: true })];
     expect(summarize(target, own).waitingThreadId).toBe("o");
   });
-  it("two levels deep, deeper ones counted as «ещё N»; finished hidden unless asked", () => {
+  it("two levels deep, deeper ones counted as «ещё N»; archived only when asked, idle ones are live", () => {
     const rows = [
       r("o", null), r("a", "o", { status: "active" }), r("a1", "a", { status: "active" }), r("a1x", "a1", { status: "active" }),
       r("a1y", "a1x", { status: "active" }), r("done", "o"), r("arch", "o", { isArchived: true, status: "active" }),
     ];
     const live = executorTree("o", rows, false);
-    expect(live.map((n) => [n.row.id, n.depth, n.hiddenBelow])).toEqual([["a", 1, 0], ["a1", 2, 2]]);
+    expect(live.map((n) => [n.row.id, n.depth, n.hiddenBelow])).toEqual([["a", 1, 0], ["a1", 2, 2], ["done", 1, 0]]);
     const all = executorTree("o", rows, true).map((n) => n.row.id);
     expect(all).toEqual(expect.arrayContaining(["a", "a1", "done", "arch"]));
   });
-  it("a finished parent with a live child stays so the child has a place", () => {
-    const rows = [r("o", null), r("p", "o"), r("c", "p", { status: "active" })];
+  it("an archived parent with a live child stays so the child has a place", () => {
+    const rows = [r("o", null), r("p", "o", { isArchived: true }), r("c", "p", { status: "active" })];
     expect(executorTree("o", rows, false).map((n) => n.row.id)).toEqual(["p", "c"]);
+  });
+  it("the counter equals the live executor rows plus their «ещё N» (idle included, archived and hidden not)", () => {
+    const rows = [
+      r("o", null), r("a", "o", { status: "active" }), r("idle", "o"), r("a1", "a"), r("a1x", "a1"), r("a1y", "a1x", { status: "active" }),
+      r("arch", "o", { isArchived: true }), r("hid", "o", { isHidden: true }), r("hidKid", "hid", { status: "active" }),
+    ];
+    const nodes = executorTree("o", rows, false);
+    const shown = nodes.length + nodes.reduce((n, x) => n + x.hiddenBelow, 0);
+    expect(summarize(target, rows).total).toBe(shown);
+    expect(shown).toBe(5);
   });
   it("activity: the task while running, the result when finished, one line", () => {
     expect(activityLine(true, "fix\n the  build", "old")).toBe("Занят: fix the build");
@@ -275,5 +285,28 @@ describe("status line without service tags", () => {
     expect(activityLine(true, "[limit-guard] [bb system] ", null)).toBe("Занят");
     expect(activityLine(false, null, "[telegram-answer:1]")).toBe("Закончил");
     expect(stripServiceTags("Текст [в скобках] внутри")).toBe("Текст [в скобках] внутри");
+  });
+});
+
+import { mergeOrder, orderRoles, visibleRecords } from "../model";
+
+describe("block order and «показать ещё»", () => {
+  const roles = [role({ id: "b", name: "Бета" }), role({ id: "a", name: "Альфа" }), role({ id: "m", name: "Ядро", primary: true }), role({ id: "c", name: "Гамма" })];
+  const at: Record<string, number> = { a: 10, b: 30, c: 10, m: 0 };
+  it("main record first, then newest activity first, equal activity by name", () => {
+    expect(orderRoles(roles, (x) => at[x.id]!).map((x) => x.id)).toEqual(["m", "b", "a", "c"]);
+  });
+  it("is stable: same input gives the same order, a frozen order keeps places and adds new records at the end", () => {
+    const one = orderRoles(roles, (x) => at[x.id]!).map((x) => x.id);
+    const two = orderRoles([...roles].reverse(), (x) => at[x.id]!).map((x) => x.id);
+    expect(two).toEqual(one);
+    expect(mergeOrder(["m", "b", "a", "c"], ["m", "c", "x", "a"])).toEqual(["m", "a", "c", "x"]);
+  });
+  it("shows the first N, plus waiting or failed records beyond them; expanded shows all", () => {
+    const ids = ["m", "b", "a", "c", "d", "e", "f"];
+    expect(visibleRecords(ids, 5, new Set(), false)).toEqual({ shown: ["m", "b", "a", "c", "d"], hidden: 2 });
+    expect(visibleRecords(ids, 5, new Set(["f"]), false)).toEqual({ shown: ["m", "b", "a", "c", "d", "f"], hidden: 1 });
+    expect(visibleRecords(ids, 5, new Set(), true)).toEqual({ shown: ids, hidden: 0 });
+    expect(visibleRecords(ids.slice(0, 4), 5, new Set(), false).hidden).toBe(0);
   });
 });

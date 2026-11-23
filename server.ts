@@ -97,7 +97,7 @@ const resolvedSchema = roleSchema.extend({
 export const rpcContract = defineRpcContract({
   roster_list: {
     input: z.null(),
-    output: z.object({ roles: z.array(resolvedSchema), launchDocUrl: z.string().nullable(), iconMarks: z.boolean().optional() }),
+    output: z.object({ roles: z.array(resolvedSchema), launchDocUrl: z.string().nullable(), iconMarks: z.boolean().optional(), blockLimit: z.number().optional() }),
   },
   roster_upsert: { input: roleInput, output: roleSchema },
   roster_remove: { input: z.object({ id: z.string().max(48) }), output: z.object({ removed: z.boolean() }) },
@@ -152,6 +152,12 @@ export default async function plugin(bb: BbPluginApi) {
       label: "Адрес документа запуска нового сотрудника",
       description: "Открывается пунктом «Новый сотрудник на платформе» на экране добавления. Пусто — пункт не показывается.",
       default: "",
+    },
+    blockLimit: {
+      type: "string",
+      label: "Сколько записей показывать в блоке «Агенты»",
+      description: "Остальные — под «Показать ещё». Запись, которая ждёт владельца или с ошибкой, видна всегда. По умолчанию 5.",
+      default: "5",
     },
     bridgePluginId: {
       type: "string",
@@ -519,7 +525,8 @@ export default async function plugin(bb: BbPluginApi) {
     roster_list: async () => {
       const roles = await resolveAll();
       const marks = await syncIconMarks(roles);
-      return { roles, launchDocUrl: isSafeUrl(current.launchDocUrl) ? current.launchDocUrl : null, iconMarks: marks };
+      const limit = Number.parseInt(String(current.blockLimit ?? "5"), 10);
+      return { roles, launchDocUrl: isSafeUrl(current.launchDocUrl) ? current.launchDocUrl : null, iconMarks: marks, blockLimit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 50) : 5 };
     },
     roster_upsert: (input) => upsert(input),
     roster_remove: async ({ id }) => ({ removed: await remove(id) }),

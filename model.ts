@@ -499,6 +499,9 @@ export function summarize(target: ActiveTarget, rows: readonly RowFacts[], byId?
     const row = stack.pop()!;
     if (seen.has(row.id)) continue;
     seen.add(row.id);
+    // "Live executor" — one rule for the counter and the expanded list: a subthread at any depth that is
+    // not archived, idle and finished ones included; a hidden subthread and its branch are not shown, so not counted.
+    if (row.isHidden) continue;
     stack.push(...(children.get(row.id) ?? []));
     if (row.isArchived) continue;
     total += 1;
@@ -534,8 +537,10 @@ export function isFinished(row: RowFacts): boolean {
 }
 
 /**
- * Executors of a thread two levels deep. Finished and archived ones are
- * dropped unless `showFinished`; a finished parent with live children stays.
+ * Executors of a thread two levels deep, deeper ones as "ещё N" on their
+ * level-2 parent. Live = not archived (idle included), the same rule as the
+ * counter in `summarize`; `showFinished` adds archived ones. An archived parent
+ * with live children stays as their header.
  */
 export function executorTree(rootId: string, rows: readonly RowFacts[], showFinished: boolean): ExecutorNode[] {
   const children = childrenIndex(rows);
@@ -545,14 +550,14 @@ export function executorTree(rootId: string, rows: readonly RowFacts[], showFini
     const seen = new Set<string>();
     while (stack.length) {
       const r = stack.pop()!;
-      if (seen.has(r.id)) continue;
+      if (seen.has(r.id) || r.isHidden) continue;
       seen.add(r.id);
-      if (showFinished || !isFinished(r)) n += 1;
+      if (showFinished || !r.isArchived) n += 1;
       stack.push(...(children.get(r.id) ?? []));
     }
     return n;
   };
-  const keep = (r: RowFacts) => !r.isHidden && (showFinished || !isFinished(r));
+  const keep = (r: RowFacts) => !r.isHidden && (showFinished || !r.isArchived);
   const out: ExecutorNode[] = [];
   for (const child of children.get(rootId) ?? []) {
     if (child.isHidden) continue;
@@ -734,4 +739,37 @@ export function rowMarkFor(roles: readonly ResolvedRole[], threadId: string): Ro
   const reserve = role.binding.mode === "group" && !(role.active.kind === "thread" && role.active.threadId === threadId);
   const label = `${role.name} — ${KIND_LABEL[role.kind]}${role.primary ? ", главная" : ""}${reserve ? "; резервный тред роли" : ""}`;
   return { roleId: role.id, glyph: role.kind === "external" ? "link" : "crown", tone: role.primary ? "accent" : "neutral", reserve, label };
+}
+
+// ---------- 0.4.3: order of records in the block ----------
+
+/**
+ * The main record first; the rest by the latest activity of the active thread
+ * and its executors, newest first; equal → by name.
+ */
+export function orderRoles<R extends Role>(roles: readonly R[], lastActiveAt: (role: R) => number): R[] {
+  return [...roles].sort((a, b) => {
+    if (a.primary !== b.primary) return a.primary ? -1 : 1;
+    const d = lastActiveAt(b) - lastActiveAt(a);
+    return d !== 0 ? d : a.name.localeCompare(b.name);
+  });
+}
+
+/**
+ * Keeps a previous order while it still fits: removed ids drop out, new ones go
+ * to the end in the fresh order. Used while the order is frozen (hover, an open
+ * record) or between recalculations.
+ */
+export function mergeOrder(previous: readonly string[], fresh: readonly string[]): string[] {
+  const now = new Set(fresh);
+  const kept = previous.filter((id) => now.has(id));
+  const seen = new Set(kept);
+  return [...kept, ...fresh.filter((id) => !seen.has(id))];
+}
+
+/** Which records the block shows: the first `limit`, plus any that wait for the owner or failed. */
+export function visibleRecords(orderedIds: readonly string[], limit: number, mustShow: ReadonlySet<string>, expanded: boolean): { shown: string[]; hidden: number } {
+  if (expanded || orderedIds.length <= limit) return { shown: [...orderedIds], hidden: 0 };
+  const shown = orderedIds.filter((id, i) => i < limit || mustShow.has(id));
+  return { shown, hidden: orderedIds.length - shown.length };
 }

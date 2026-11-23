@@ -62,6 +62,36 @@ Commands: [skills/agent-roster/SKILL.md](skills/agent-roster/SKILL.md).
 - Data comes from bb's sidebar thread data (live), plus server reads on change; no
   polling more often than every few seconds.
 
+### 0.4.3: the block reads like bb's thread list
+
+- **A press anywhere on a record opens its active thread** (icon, name, status line,
+  empty space); the pointer is a hand over the whole record. Only the chevron expands a
+  record. Executor rows open their own threads.
+- **Grid.** The «Агенты» header, the record icon, the name and the right edge stand on
+  the same lines as bb's «Last 5» header and thread rows. «⋯» takes no place of its own:
+  with a mouse it shows over the state cell on hover; on touch screens it is always shown.
+- **Order.** The main record first; the rest by the latest activity of the active thread
+  and its executors, newest first; equal → by name. The block reorders at most every
+  45 s, and never while the pointer is over it or a record is expanded. The page lists
+  all records in the same order.
+- **«↓ Показать ещё».** The block shows the first N records (setting «Сколько записей
+  показывать в блоке», default 5), then «↓ Показать ещё» with «shown / total»;
+  «↑ Свернуть» after. A record that waits for the owner or has an error is always shown.
+- **Live executors — one rule for the counter and the list.** A live executor is a
+  subthread at any depth that is not archived — idle and finished ones included; hidden
+  subthreads and their branches are not counted. The record's «↳N» is exactly the number
+  of rows the expanded record lists (levels below the second are counted as «+N» on their
+  parent, the rows beyond 7 as «ещё N»). Archived executors are behind «архивные (N)».
+- **Expanded record.** The executors hang under the record with an indent and a thin
+  guide, like bb's subthreads. No executors → one line «исполнителей нет» and
+  «архивные (N)». Group labels («под управлением» / «не под управлением») only when both
+  groups are there. Every service line uses one small font; expandable ones have a
+  chevron that shows their state, a hover highlight and the hand pointer.
+- **Project logo** — the same picture as the thread rows (Machine Tabs' icon first, the
+  project's `.bb/icon.png` / `.bb/icon.svg` as a fallback). The file is not changed: a
+  PNG is shown in grayscale, an SVG as a mask in the text colour, so any fills, fill
+  rules or `currentColor` give the same monochrome shape.
+
 ### 0.3: orchestrator vs agent
 
 - **Orchestrator** (a project thread promoted to a role) gets three layers:

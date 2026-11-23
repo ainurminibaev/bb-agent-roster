@@ -313,10 +313,10 @@ describe("0.2: channels and project work in the row", () => {
     expect(site.querySelector("[data-telegram-corner]")).toBeNull();
     expect(lead.querySelector("[data-agent-roster-line] > span [data-agent-roster-channel]")).toBeNull();
     expect(lead.querySelectorAll("[data-role-icon]")).toHaveLength(1);
-    expect(site.querySelector("[data-agent-roster-work]")!.textContent!.replace(/\s/g, "")).toBe("↳1·1");
+    expect(site.querySelector("[data-agent-roster-total]")!.textContent!.replace(/\s/g, "")).toBe("↳1·1");
     const toggle = site.querySelector("[data-agent-roster-toggle]") as HTMLButtonElement;
     if (toggle.getAttribute("aria-expanded") !== "true") act(() => toggle.click());
-    expect(site.querySelector("[data-agent-roster-work]")!.textContent).toBe("↳1 · 1");
+    expect(site.querySelector("[data-agent-roster-total]")!.textContent).toBe("↳1 · 1");
     expect(site.textContent).toContain("под управлением");
     expect(site.textContent).toContain("не под управлением");
     expect(site.querySelector('[data-unmanaged="thr_free"]')).not.toBeNull();
@@ -441,7 +441,7 @@ describe("0.3.2: one crown drawing", () => {
 });
 
 describe("0.3.3: expanded record — live executors first, archived folded", () => {
-  it("shows only live executors (≤7, then «ещё N»); finished and archived behind «архивные (N)», folded on every opening", async () => {
+  it("shows live executors, idle ones included (≤7, then «ещё N»); archived behind «архивные (N)», folded on every opening", async () => {
     machineTabsSidebar();
     const scripts = await mountPluginContentScripts(app, { pluginId: "agent-roster" });
     await frame();
@@ -460,14 +460,20 @@ describe("0.3.3: expanded record — live executors first, archived folded", () 
     const site = host.querySelector('[data-agent-roster-role="site"]')!;
     const toggle = site.querySelector("[data-agent-roster-toggle]") as HTMLButtonElement;
     if (toggle.getAttribute("aria-expanded") !== "true") act(() => toggle.click());
-    await waitFor(() => expect(site.querySelector("[data-agent-roster-show-finished]")?.textContent).toBe("архивные (2)"));
+    await waitFor(() => expect(site.querySelector("[data-agent-roster-show-finished]")?.textContent).toBe("архивные (1)"));
     expect(site.querySelectorAll("[data-executor]")).toHaveLength(7);
     expect(site.querySelector("[data-executor][data-archived]")).toBeNull();
-    expect(site.querySelector('[data-executor="thr_done"]')).toBeNull();
-    expect(site.querySelector("[data-agent-roster-more-live]")!.textContent).toBe("ещё 2");
+    // The counter equals the live rows: 10 (9 working + 1 idle) = 7 shown + «ещё 3».
+    expect(site.querySelector("[data-agent-roster-total]")!.getAttribute("data-count")).toBe("10");
+    expect(site.querySelector("[data-agent-roster-more-live]")!.textContent).toBe("ещё 3");
+    act(() => (site.querySelector("[data-agent-roster-more-live]") as HTMLButtonElement).click());
+    expect(site.querySelectorAll("[data-executor]")).toHaveLength(10);
+    expect(site.querySelector('[data-executor="thr_done"]')).not.toBeNull();
+    // One group only: no group labels.
+    expect(site.querySelector("[data-agent-roster-group]")).toBeNull();
     act(() => (site.querySelector("[data-agent-roster-show-finished]") as HTMLButtonElement).click());
     const group = site.querySelector("[data-agent-roster-archived]")!;
-    expect(Array.from(group.querySelectorAll("[data-executor]")).map((e) => e.getAttribute("data-executor")).sort()).toEqual(["thr_arch", "thr_done"]);
+    expect(Array.from(group.querySelectorAll("[data-executor]")).map((e) => e.getAttribute("data-executor")).sort()).toEqual(["thr_arch"]);
     // Collapse and open again: the archived group is folded again.
     act(() => (site.querySelector("[data-agent-roster-toggle]") as HTMLButtonElement).click());
     act(() => (site.querySelector("[data-agent-roster-toggle]") as HTMLButtonElement).click());
@@ -584,7 +590,7 @@ describe("0.4.3: a press anywhere on a record opens its thread", () => {
       ] as never },
     });
     const host = document.querySelector(`[${HOST_ATTR}]`)!;
-    await waitFor(() => expect(host.querySelector('[data-agent-roster-role="site"] [data-agent-roster-work], [data-agent-roster-total]')).not.toBeNull());
+    await waitFor(() => expect(host.querySelector('[data-agent-roster-role="site"] [data-agent-roster-total]')).not.toBeNull());
     const rec = host.querySelector('[data-agent-roster-role="site"]')!;
     const toggle = rec.querySelector("[data-agent-roster-toggle]") as HTMLButtonElement;
     setExpanded(rec, false);
@@ -600,7 +606,7 @@ describe("0.4.3: a press anywhere on a record opens its thread", () => {
         name: line.querySelector("[data-agent-roster-title] > span")!,
         status: line.querySelector("[data-agent-roster-status]")!,
         gap: line.querySelector("[data-agent-roster-name-line]")!,
-        counter: line.querySelector("[data-agent-roster-work], [data-agent-roster-total]")!,
+        counter: line.querySelector("[data-agent-roster-total]")!,
       };
       for (const [where, el] of Object.entries(points)) expect(catchesPress(el, line), `${state}: ${where}`).toBeNull();
       expect(points.status.tagName, state).not.toBe("BUTTON");
@@ -635,7 +641,73 @@ describe("0.4.3: a press anywhere on a record opens its thread", () => {
   });
 });
 
-describe("0.4.3: project logo kinds", () => {
+describe("0.4.3: block order, «Показать ещё», empty expanded record, logo kinds", () => {
+  it("main record first, then by activity; first N then «↓ Показать ещё» with «N / total»; a waiting record beyond N is shown", async () => {
+    machineTabsSidebar();
+    const scripts = await mountPluginContentScripts(app, { pluginId: "agent-roster" });
+    await frame();
+    const mk = (i: number, extra: Partial<ResolvedRole> = {}) => ({ ...ROLES[1], id: `r${i}`, name: `R${i}`, active: { kind: "thread", threadId: `thr_${i}`, reason: "pinned" }, ...extra }) as ResolvedRole;
+    const roles = [mk(0), mk(1), mk(2), mk(3, { primary: true }), mk(4), mk(5), mk(6), mk(7)];
+    const threads = roles.map((r, i) => ({ ...row(`thr_${i}`, null, i === 0 ? { hasPendingInteraction: true, indicator: "waiting-for-input" } : {}), title: r.name, updatedAt: 1000 + i, latestAttentionAt: 0 }));
+    const slot = renderSlot(app.appOverlays[0]!, {}, {
+      rpc: { roster_list: () => ({ roles, launchDocUrl: null, blockLimit: 5 }), roster_activity: () => ({}) } as never,
+      sidebarThreads: { threads: threads as never },
+    });
+    const host = document.querySelector(`[${HOST_ATTR}]`)!;
+    await waitFor(() => expect(host.querySelector("[data-agent-roster-pager]")).not.toBeNull());
+    const ids = () => Array.from(host.querySelectorAll("[data-agent-roster-role]")).map((e) => e.getAttribute("data-agent-roster-role"));
+    // main r3 first, then newest activity first (r7, r6, r5, r4); r0 waits for the owner, so it is shown too
+    expect(ids()).toEqual(["r3", "r7", "r6", "r5", "r4", "r0"]);
+    const more = host.querySelector("[data-agent-roster-show-more]") as HTMLButtonElement;
+    expect(more.textContent).toBe("↓ Показать ещё");
+    expect(host.querySelector("[data-agent-roster-page-count]")!.textContent).toBe("6 / 8");
+    act(() => more.click());
+    expect(ids()).toEqual(["r3", "r7", "r6", "r5", "r4", "r2", "r1", "r0"]);
+    expect(more.textContent).toBe("↑ Свернуть");
+    slot.lifecycle.unmount();
+    await scripts.lifecycle.dispose();
+  });
+
+  it("an expanded record without executors: one muted line «исполнителей нет» and a clickable «архивные (N)» with a chevron", async () => {
+    machineTabsSidebar();
+    const scripts = await mountPluginContentScripts(app, { pluginId: "agent-roster" });
+    await frame();
+    const slot = renderSlot(app.appOverlays[0]!, {}, {
+      rpc: {
+        roster_list: () => ({ roles: ROLES, launchDocUrl: null }), roster_activity: () => ({}),
+        roster_executors: () => ({ threads: [{ id: "thr_a1", parentThreadId: "thr_site", title: "old", status: "idle", isArchived: true }] }),
+      } as never,
+      sidebarThreads: { threads: [{ ...row("thr_lead", null), title: "lead" }, { ...row("thr_site", null), title: "site" }] as never },
+    });
+    const host = document.querySelector(`[${HOST_ATTR}]`)!;
+    await waitFor(() => expect(host.querySelector('[data-agent-roster-role="site"]')).not.toBeNull());
+    const rec = host.querySelector('[data-agent-roster-role="site"]')!;
+    setExpanded(rec, true);
+    await waitFor(() => expect(rec.querySelector("[data-agent-roster-show-finished]")).not.toBeNull());
+    const list = rec.querySelector("[data-agent-roster-executors]")!;
+    // the whole expanded part is one indented list with a guide
+    expect((list.getAttribute("class") ?? "").split(/\s+/)).toEqual(expect.arrayContaining(["border-l", "ml-4"]));
+    expect(list.children).toHaveLength(1);
+    const empty = list.querySelector("[data-agent-roster-empty]")!;
+    expect(empty.textContent).toBe("исполнителей нет" + "архивные (1)");
+    expect(list.querySelector("[data-agent-roster-group]")).toBeNull();
+    const archived = empty.querySelector("[data-agent-roster-show-finished]") as HTMLButtonElement;
+    const cls = (archived.getAttribute("class") ?? "").split(/\s+/);
+    expect(cls).toEqual(expect.arrayContaining(["cursor-pointer", "hover:bg-sidebar-accent"]));
+    expect(archived.querySelector("svg")).not.toBeNull();
+    expect(archived.getAttribute("aria-expanded")).toBe("false");
+    // one font for every service line
+    expect((empty.getAttribute("class") ?? "")).toContain("text-[9.5px]");
+    expect(cls).toContain("text-[9.5px]");
+    act(() => archived.click());
+    expect(archived.getAttribute("aria-expanded")).toBe("true");
+    expect(rec.querySelector('[data-executor="thr_a1"]')).not.toBeNull();
+    setExpanded(rec, false);
+    slot.lifecycle.unmount();
+    await scripts.lifecycle.dispose();
+    window.localStorage.clear();
+  });
+
   it("an SVG with evenodd and fill=\"none\" on the root is drawn as a mask of the untouched file; PNG as an image", () => {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"><path fill-rule="evenodd" clip-rule="evenodd" d="M2 2h20v20H2zM12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10z" fill="currentColor"/></svg>';
     const url = `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`;
@@ -647,4 +719,5 @@ describe("0.4.3: project logo kinds", () => {
     expect((el.getAttribute("class") ?? "").split(/\s+/)).toContain("bg-current");
     expect(r.container.querySelector("img")).toBeNull();
     r.lifecycle.unmount();
-  });});
+  });
+});

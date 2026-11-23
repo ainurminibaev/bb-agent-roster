@@ -16,9 +16,11 @@ interface State {
   dialog: DialogRequest | null;
   /** Machine Tabs draws role marks on thread icons: no second mark on the row. */
   iconMarks: boolean;
+  /** How many records the sidebar block shows before «Показать ещё». */
+  blockLimit: number;
 }
 
-let state: State = { host: null, roles: null, launchDocUrl: null, dialog: null, iconMarks: false };
+let state: State = { host: null, roles: null, launchDocUrl: null, dialog: null, iconMarks: false, blockLimit: 5 };
 const listeners = new Set<() => void>();
 
 export function getState(): State {
@@ -39,6 +41,6 @@ export function openDialog(request: DialogRequest): void {
   setState({ dialog: request });
 }
 export function resetStore(): void {
-  state = { host: null, roles: null, launchDocUrl: null, dialog: null, iconMarks: false };
+  state = { host: null, roles: null, launchDocUrl: null, dialog: null, iconMarks: false, blockLimit: 5 };
   for (const listener of [...listeners]) listener();
 }
