@@ -955,6 +955,8 @@ interface Draft {
   url: string;
   primary: boolean;
   rulesEnabled: boolean;
+  /** Keep the thread title «Name — project»; null — not touched in the dialog (default by kind). */
+  manageTitle: boolean | null;
 }
 
 function draftFor(request: DialogRequest, roles: ResolvedRole[]): Draft | null {
@@ -964,6 +966,7 @@ function draftFor(request: DialogRequest, roles: ResolvedRole[]): Draft | null {
       bindMode: "pinned", threadId: request.threadId ?? "", threadIds: "", bridgeTopicId: "", url: "",
       primary: false,
       rulesEnabled: true,
+      manageTitle: null,
     };
   }
   if (request.mode === "move") return null;
@@ -979,6 +982,7 @@ function draftFor(request: DialogRequest, roles: ResolvedRole[]): Draft | null {
     url: b.mode === "external" ? b.url : "",
     primary: role.primary,
     rulesEnabled: role.rulesEnabled,
+    manageTitle: null,
   };
 }
 
@@ -1048,6 +1052,7 @@ export function RoleDialog() {
         binding: bindingOf(draft),
         primary: draft.primary,
         ...(draft.kind === "orchestrator" ? { rulesEnabled: draft.rulesEnabled } : {}),
+        ...(draft.manageTitle !== null && draft.kind !== "external" ? { manageTitle: draft.manageTitle } : {}),
       });
       await refresh(rpc);
       // A fresh orchestrator: offer its AGENTS.md section before closing.
@@ -1112,6 +1117,14 @@ export function RoleDialog() {
               <label className="flex items-start gap-2 text-sm" data-agent-roster-rules="">
                 <input type="checkbox" className="mt-0.5" checked={draft.rulesEnabled} onChange={(e) => patch({ rulesEnabled: e.target.checked })} />
                 <span>Общие правила оркестратора<span className="block text-xs text-muted-foreground">Короткий текст роли из плагина в инструкции треда и указатель на раздел роли в AGENTS.md проекта.</span></span>
+              </label>
+            ) : null}
+            {draft.kind !== "external" ? (
+              <label className="flex items-start gap-2 text-sm" data-agent-roster-title-switch="">
+                <input type="checkbox" className="mt-0.5"
+                  checked={draft.manageTitle ?? (editing && editing.kind === draft.kind ? editing.manageTitle : draft.kind === "orchestrator")}
+                  onChange={(e) => patch({ manageTitle: e.target.checked })} />
+                <span>Вести название треда<span className="block text-xs text-muted-foreground">Название действующего треда — «Имя — проект»; прежнее вернётся, когда роль уйдёт с треда. У агента обычно выключено: его треды называет платформа или мост.</span></span>
               </label>
             ) : null}
             {editing && editing.kind === "orchestrator" ? (

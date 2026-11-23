@@ -56,6 +56,12 @@ export interface Role {
   primary: boolean;
   /** Orchestrator only: the shared orchestrator rules go into its thread. Absent in old data → off. */
   rulesEnabled: boolean;
+  /**
+   * The plugin keeps the active thread's title as "Name — project". Absent in old data →
+   * on for an orchestrator, off for an agent (its platform or bridge names its threads)
+   * and always off for an external employee.
+   */
+  manageTitle: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -138,6 +144,7 @@ export function parseRoster(raw: unknown): Roster {
       binding: parseBinding(r.binding, kind),
       primary: r.primary === true,
       rulesEnabled: kind === "orchestrator" && r.rulesEnabled === true,
+      manageTitle: kind !== "external" && (typeof r.manageTitle === "boolean" ? r.manageTitle : kind === "orchestrator"),
       createdAt: num(r.createdAt, 0),
       updatedAt: num(r.updatedAt, 0),
     });
@@ -301,7 +308,7 @@ export function setRoleThread(role: Role, threadId: string, replace: string | nu
     binding = { mode: "pinned", threadId };
   }
   const kind = role.kind === "external" ? "agent" : role.kind;
-  return { ...role, kind, binding, rulesEnabled: kind === "orchestrator" && role.rulesEnabled, updatedAt: now };
+  return { ...role, kind, binding, rulesEnabled: kind === "orchestrator" && role.rulesEnabled, manageTitle: role.manageTitle, updatedAt: now };
 }
 
 /** Roles whose binding includes the thread (a group marks every thread of it). */
@@ -691,6 +698,8 @@ export interface ListedRole {
   primary: boolean;
   /** Orchestrator: whether the shared orchestrator rules are on (added in 0.3). */
   orchestratorRules: boolean;
+  /** The plugin keeps the active thread's title «Name — project». */
+  managesTitle: boolean;
   reportsToName: string | null;
   projectId: string | null;
   /** The active thread to write to with `bb thread tell`; null when there is none here. */
@@ -717,6 +726,7 @@ export function listJson(roles: readonly ResolvedRole[]): ListedRoster {
       reportsTo: r.parentId,
       primary: r.primary,
       orchestratorRules: r.rulesEnabled,
+      managesTitle: r.manageTitle,
       reportsToName: r.parentName,
       projectId: r.projectId,
       activeThreadId: r.active.kind === "thread" ? r.active.threadId : null,
@@ -772,4 +782,104 @@ export function visibleRecords(orderedIds: readonly string[], limit: number, mus
   if (expanded || orderedIds.length <= limit) return { shown: [...orderedIds], hidden: 0 };
   const shown = orderedIds.filter((id, i) => i < limit || mustShow.has(id));
   return { shown, hidden: orderedIds.length - shown.length };
+}
+
+// ---------- 0.4.5: the role's thread title "Name — project" ----------
+
+/** What the plugin remembers about a thread whose title it set. */
+export interface TitleMemoryEntry {
+  /** The title before the plugin first set its own; null — unknown (it already had ours). */
+  previous: string | null;
+  /** The title the plugin set (or found already set). */
+  ours: string;
+}
+export type TitleMemory = Record<string, TitleMemoryEntry>;
+
+/** A thread whose title a role wants, and what the role looked like (to see a change). */
+export interface TitleTarget {
+  threadId: string;
+  title: string;
+  /** name, project, thread, switch: a different signature means the role changed. */
+  signature: string;
+}
+
+export function roleTitle(name: string, projectName: string): string {
+  return `${name} — ${projectName}`;
+}
+
+/** Threads whose titles the roles want now: a role with the switch on, a project and an active thread. */
+export function titleTargets(
+  roles: readonly (Role & { active?: ActiveTarget })[],
+  projectName: (projectId: string) => string | null,
+): Map<string, TitleTarget> {
+  const out = new Map<string, TitleTarget>();
+  for (const role of roles) {
+    if (!role.manageTitle || role.kind === "external" || !role.projectId) continue;
+    const threadId = role.active?.kind === "thread" ? role.active.threadId : role.binding.mode === "pinned" ? role.binding.threadId : null;
+    const project = projectName(role.projectId);
+    if (!threadId || !project || out.has(threadId)) continue;
+    out.set(threadId, { threadId, title: roleTitle(role.name, project), signature: JSON.stringify([role.id, role.name, role.projectId, project, threadId]) });
+  }
+  return out;
+}
+
+export interface TitlePlan {
+  /** Titles to set (bb's ordinary thread rename). */
+  set: { threadId: string; title: string }[];
+  memory: TitleMemory;
+}
+
+/**
+ * What to rename after a change of the roster.
+ * - A thread a role wants: set "Name — project" when the role is new or changed
+ *   (name, project, thread, switch) and the title differs; the title it had before is
+ *   remembered once. A role that did not change leaves the title alone — the owner may
+ *   have renamed the thread by hand after us. A title that already matches is only remembered.
+ * - A thread no role wants any more (role removed, moved to another thread, switch off):
+ *   its remembered previous title comes back if the title is still ours; a title the
+ *   owner changed by hand stays. The memory entry is dropped.
+ * `current` — the thread's title now; null when the thread is unknown (skip it).
+ */
+export function planTitles(
+  before: ReadonlyMap<string, TitleTarget>,
+  after: ReadonlyMap<string, TitleTarget>,
+  memory: Readonly<TitleMemory>,
+  current: (threadId: string) => string | null,
+): TitlePlan {
+  const next: TitleMemory = { ...memory };
+  const set: TitlePlan["set"] = [];
+  for (const target of after.values()) {
+    const now = current(target.threadId);
+    if (now === null) continue;
+    const mem = next[target.threadId];
+    if (now === target.title) {
+      next[target.threadId] = { previous: mem ? mem.previous : null, ours: target.title };
+      continue;
+    }
+    const changed = before.get(target.threadId)?.signature !== target.signature;
+    if (!changed) continue;
+    set.push({ threadId: target.threadId, title: target.title });
+    next[target.threadId] = { previous: mem ? mem.previous : now, ours: target.title };
+  }
+  for (const [threadId, mem] of Object.entries(memory)) {
+    if (after.has(threadId)) continue;
+    const now = current(threadId);
+    if (now === null) continue; // unknown now: keep the memory for later
+    if (now === mem.ours && mem.previous !== null && mem.previous !== now) set.push({ threadId, title: mem.previous });
+    delete next[threadId];
+  }
+  return { set, memory: next };
+}
+
+/** Stored memory, read tolerantly. */
+export function parseTitleMemory(raw: unknown): TitleMemory {
+  const out: TitleMemory = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [id, v] of Object.entries(raw as Record<string, unknown>).slice(0, LIMITS.roles * 2)) {
+    if (!isThreadId(id) || !v || typeof v !== "object") continue;
+    const e = v as Record<string, unknown>;
+    if (typeof e.ours !== "string") continue;
+    out[id] = { previous: typeof e.previous === "string" ? e.previous.slice(0, 300) : null, ours: e.ours.slice(0, 300) };
+  }
+  return out;
 }

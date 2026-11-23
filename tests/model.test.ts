@@ -310,3 +310,62 @@ describe("block order and «показать ещё»", () => {
     expect(visibleRecords(ids.slice(0, 4), 5, new Set(), false).hidden).toBe(0);
   });
 });
+
+import { parseTitleMemory, planTitles, titleTargets, type TitleTarget } from "../model";
+
+describe("0.4.5: the role's thread title «Name — project»", () => {
+  const names: Record<string, string> = { p1: "shop", p2: "site" };
+  const pn = (id: string) => names[id] ?? null;
+  const orch = (extra: Partial<Parameters<typeof role>[0]> = {}) => role({ id: "o", name: "Сайт", kind: "orchestrator", projectId: "p1", manageTitle: true, binding: { mode: "pinned", threadId: "thr_1" }, ...extra });
+  const t = (roles: ReturnType<typeof role>[]) => titleTargets(roles, pn);
+  const none = new Map<string, TitleTarget>();
+
+  it("old data: on for an orchestrator, off for an agent and an external employee", () => {
+    const r = parseRoster({ roles: [{ id: "a", name: "A", kind: "orchestrator" }, { id: "b", name: "B", kind: "agent" }, { id: "c", name: "C", kind: "external", binding: { mode: "external", url: "https://x.org" } }, { id: "d", name: "D", kind: "agent", manageTitle: true }] });
+    expect(r.roles.map((x) => x.manageTitle)).toEqual([true, false, false, true]);
+  });
+  it("a new role sets «Name — project» and remembers the previous title", () => {
+    const plan = planTitles(none, t([orch()]), {}, () => "Сайт");
+    expect(plan.set).toEqual([{ threadId: "thr_1", title: "Сайт — shop" }]);
+    expect(plan.memory.thr_1).toEqual({ previous: "Сайт", ours: "Сайт — shop" });
+  });
+  it("nothing to do when the title already matches; the match is remembered", () => {
+    const plan = planTitles(none, t([orch()]), {}, () => "Сайт — shop");
+    expect(plan.set).toEqual([]);
+    expect(plan.memory.thr_1).toEqual({ previous: null, ours: "Сайт — shop" });
+  });
+  it("renamed by hand after us: kept while the role does not change, replaced on the next change", () => {
+    const mem = { thr_1: { previous: "Сайт", ours: "Сайт — shop" } };
+    const same = planTitles(t([orch()]), t([orch()]), mem, () => "мой тред");
+    expect(same.set).toEqual([]);
+    const renamed = planTitles(t([orch()]), t([orch({ name: "Сайт 2" })]), mem, () => "мой тред");
+    expect(renamed.set).toEqual([{ threadId: "thr_1", title: "Сайт 2 — shop" }]);
+    expect(renamed.memory.thr_1!.previous).toBe("Сайт");
+  });
+  it("a project change renames; an agent, a role without a project or with the switch off is not touched", () => {
+    const moved = planTitles(t([orch()]), t([orch({ projectId: "p2" })]), {}, () => "Сайт — shop");
+    expect(moved.set).toEqual([{ threadId: "thr_1", title: "Сайт — site" }]);
+    expect(t([orch({ kind: "agent", manageTitle: false })]).size).toBe(0);
+    expect(t([orch({ projectId: null })]).size).toBe(0);
+    expect(t([orch({ manageTitle: false })]).size).toBe(0);
+  });
+  it("set-thread: the new thread gets the title, the old one gets its previous title back", () => {
+    const mem = { thr_1: { previous: "Сайт", ours: "Сайт — shop" } };
+    const titles: Record<string, string> = { thr_1: "Сайт — shop", thr_2: "новый тред" };
+    const plan = planTitles(t([orch()]), t([orch({ binding: { mode: "pinned", threadId: "thr_2" } })]), mem, (id) => titles[id] ?? null);
+    expect(plan.set).toEqual([{ threadId: "thr_2", title: "Сайт — shop" }, { threadId: "thr_1", title: "Сайт" }]);
+    expect(plan.memory).toEqual({ thr_2: { previous: "новый тред", ours: "Сайт — shop" } });
+  });
+  it("role removed or switch off: the previous title comes back only if the title is still ours", () => {
+    const mem = { thr_1: { previous: "Уборка 2.0", ours: "Ведущий — platform" } };
+    expect(planTitles(t([orch()]), none, mem, () => "Ведущий — platform").set).toEqual([{ threadId: "thr_1", title: "Уборка 2.0" }]);
+    const byHand = planTitles(t([orch()]), none, mem, () => "переименован");
+    expect(byHand.set).toEqual([]);
+    expect(byHand.memory).toEqual({});
+    // previous unknown: nothing to bring back
+    expect(planTitles(t([orch()]), none, { thr_1: { previous: null, ours: "x" } }, () => "x").set).toEqual([]);
+  });
+  it("memory is read tolerantly", () => {
+    expect(parseTitleMemory({ thr_1: { previous: "a", ours: "b" }, "bad id!": { ours: "x" }, thr_2: { previous: 3 } })).toEqual({ thr_1: { previous: "a", ours: "b" } });
+  });
+});

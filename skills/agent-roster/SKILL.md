@@ -53,6 +53,14 @@ bb agent-roster set-thread assistant thr_c --replace thr_a
 bb agent-roster remove site                        # the thread itself is untouched
 ```
 
+`--title on|off` — the plugin keeps the role's active thread titled «Name — project»
+(default on for an orchestrator, off for an agent: its platform or bridge names its threads).
+It renames on adding the role, changing its name or project and on `set-thread`; the previous
+title comes back when the role leaves the thread (removed, moved, switched off). A title the
+owner changed by hand is kept until the role itself changes. For a thread already renamed to
+«Name — project» by hand, `bb agent-roster title-previous <thread> "<old title>"` tells the
+plugin which title to bring back.
+
 `--rules on|off` (orchestrator only) switches the shared orchestrator rules in its
 thread: on by default for a new orchestrator, off for ones saved before 0.3. Agents
 never get those rules. The role's specifics live in the project's AGENTS.md, section

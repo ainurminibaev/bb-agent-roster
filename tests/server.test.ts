@@ -49,7 +49,7 @@ describe("server", () => {
     expect(json.roles.find((x: { id: string }) => x.id === "site").activeThreadId).toBe("thr_c");
 
     r = await cli(h, ["remove", "site"]);
-    expect(r.stdout).toContain("untouched");
+    expect(r.stdout).toContain("its thread is kept");
     expect(JSON.parse((await cli(h, ["list", "--json"])).stdout).roles).toHaveLength(1);
     expect(h.harness.inspection.sdk.callsTo("threads.archive")).toHaveLength(0);
     expect(h.harness.inspection.sdk.callsTo("threads.delete")).toHaveLength(0);
@@ -310,5 +310,57 @@ describe("0.3.1: Telegram on the thread icon", () => {
     await h.harness.behavior.callRpc("roster_list", null);
     const marks = sent.at(-1)!.marks.filter((m) => m.threadId === "thr_a").map((m) => `${m.glyph}@${m.place}`).sort();
     expect(marks).toEqual(["crown@top", "telegram@corner"]);
+  });
+});
+
+describe("0.4.5: thread titles through the CLI", () => {
+  it("add, rename, set-thread, remove: «Name — project» set by bb's thread update, previous titles come back; an agent is not touched", async () => {
+    const titles: Record<string, string> = { thr_a: "Сайт", thr_b: "другой", thr_g: "агент" };
+    const updates: { threadId: string; title: string }[] = [];
+    const h = await setup({ thr_a: {}, thr_b: {}, thr_g: {} });
+    h.harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => {
+      if (!(threadId in titles)) throw new Error("not found");
+      return { ...makeThreadResponse({ id: threadId, archivedAt: null, updatedAt: 1 }), title: titles[threadId] } as never;
+    });
+    h.harness.sdk.stub("threads.update", async (args: { threadId: string; title: string }) => { updates.push(args); titles[args.threadId] = args.title; return {} as never; });
+    h.harness.sdk.stub("projects.get", async () => ({ name: "shop", sources: [] }) as never);
+    expect((await cli(h, ["add", "--name", "Сайт", "--kind", "orchestrator", "--project", "p1", "--thread", "thr_a"])).exitCode).toBe(0);
+    expect(titles.thr_a).toBe("Сайт — shop");
+    expect((await cli(h, ["add", "--name", "Агент", "--kind", "agent", "--project", "p1", "--thread", "thr_g"])).exitCode).toBe(0);
+    expect(titles.thr_g).toBe("агент");
+    const json = JSON.parse((await cli(h, ["list", "--json"])).stdout);
+    const by = (id: string) => json.roles.find((r: { id: string }) => r.id === id);
+    expect([by("sayt").managesTitle, by("agent").managesTitle]).toEqual([true, false]);
+    // the owner renames by hand; an unrelated change of another role does not overwrite it
+    titles.thr_a = "мой";
+    await cli(h, ["update", "agent", "--about", "x"]);
+    expect(titles.thr_a).toBe("мой");
+    // a change of the role itself does
+    await cli(h, ["update", "sayt", "--name", "Сайт"]);
+    expect(titles.thr_a).toBe("мой");
+    await cli(h, ["update", "sayt", "--name", "Сайт Главный"]);
+    expect(titles.thr_a).toBe("Сайт Главный — shop");
+    // moved to another thread: the old one gets its first title back
+    await cli(h, ["set-thread", "sayt", "thr_b"]);
+    expect(titles.thr_b).toBe("Сайт Главный — shop");
+    expect(titles.thr_a).toBe("Сайт");
+    // switch off, then remove: previous title of thr_b back once
+    await cli(h, ["update", "sayt", "--title", "off"]);
+    expect(titles.thr_b).toBe("другой");
+    const n = updates.length;
+    await cli(h, ["remove", "sayt"]);
+    expect(updates.length).toBe(n);
+  });
+  it("title-previous: a thread renamed to «Name — project» by hand gets its old title back when the role leaves", async () => {
+    const titles: Record<string, string> = { thr_a: "Сборщик — platform" };
+    const h = await setup({ thr_a: {} });
+    h.harness.sdk.stub("threads.get", async ({ threadId }: { threadId: string }) => ({ ...makeThreadResponse({ id: threadId, archivedAt: null, updatedAt: 1 }), title: titles[threadId] }) as never);
+    h.harness.sdk.stub("threads.update", async (args: { threadId: string; title: string }) => { titles[args.threadId] = args.title; return {} as never; });
+    h.harness.sdk.stub("projects.get", async () => ({ name: "platform", sources: [] }) as never);
+    await cli(h, ["add", "--name", "Сборщик", "--kind", "orchestrator", "--project", "p1", "--thread", "thr_a"]);
+    expect(titles.thr_a).toBe("Сборщик — platform");
+    expect((await cli(h, ["title-previous", "thr_a", "Сборщик"])).exitCode).toBe(0);
+    await cli(h, ["remove", "sborschik"]);
+    expect(titles.thr_a).toBe("Сборщик");
   });
 });

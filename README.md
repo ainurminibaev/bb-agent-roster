@@ -62,6 +62,25 @@ Commands: [skills/agent-roster/SKILL.md](skills/agent-roster/SKILL.md).
 - Data comes from bb's sidebar thread data (live), plus server reads on change; no
   polling more often than every few seconds.
 
+### 0.4.5: the role's thread title «Name — project»
+
+For a role with the switch «Вести название треда» on (default for an orchestrator; off for
+an agent, whose platform or bridge names its threads; never for an external employee) and a
+project, the plugin keeps the active thread's title «Name — project» with bb's ordinary
+thread rename:
+
+- it renames when the role is added, its name or project changes, the switch is turned on,
+  or the role moves to another thread (`set-thread`); a title that already matches is left;
+- the title the thread had before is remembered in the plugin's data and comes back when the
+  role leaves the thread (removed, moved to another thread, switch off) — if the title is
+  still the plugin's; a title the owner changed by hand stays;
+- a thread renamed by hand after the plugin keeps the owner's title until the role itself
+  changes;
+- `bb agent-roster title-previous <thread> "<old title>"` records the old title of a thread
+  renamed to «Name — project» by hand before the plugin, so it can come back.
+
+The list JSON (format 1) carries `managesTitle` for every role.
+
 ### 0.4.3: the block reads like bb's thread list
 
 - **A press anywhere on a record opens its active thread** (icon, name, status line,

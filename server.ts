@@ -17,6 +17,11 @@ import {
   KIND_LABEL,
   LIMITS,
   parseRoster,
+  parseTitleMemory,
+  planTitles,
+  titleTargets,
+  type TitleMemory,
+  type TitleTarget,
   removeRole,
   resolveActive,
   type ResolvedRole,
@@ -66,6 +71,8 @@ const roleInput = z.object({
   primary: z.boolean().optional(),
   /** Orchestrator rules switch; omitted → on for a new orchestrator, unchanged for an existing role. */
   rulesEnabled: z.boolean().optional(),
+  /** Keep the active thread's title "Name — project"; omitted → on for an orchestrator, off for an agent, unchanged when the kind stays. */
+  manageTitle: z.boolean().optional(),
 });
 export type RoleInput = z.input<typeof roleInput>;
 
@@ -85,6 +92,7 @@ const roleSchema = z.object({
   binding: bindingSchema,
   primary: z.boolean(),
   rulesEnabled: z.boolean(),
+  manageTitle: z.boolean(),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
@@ -181,14 +189,60 @@ export default async function plugin(bb: BbPluginApi) {
       const fresh = parseRoster(await bb.storage.kv.get<unknown>(STORAGE_KEY));
       const { roster: next, result } = change(fresh);
       const clean = parseRoster(next);
+      const before = await targetsOf(fresh).catch(() => new Map<string, TitleTarget>());
       await bb.storage.kv.set(STORAGE_KEY, clean);
       roster = clean;
+      await syncTitles(before, clean).catch(() => undefined);
       bb.realtime.publish(CHANGED, { count: clean.roles.length });
       void resolveAll().then(syncIconMarks).catch(() => undefined);
       return result;
     });
     writing = run.catch(() => undefined);
     return run;
+  }
+
+  // ---------- 0.4.5: the role's thread title "Name — project" ----------
+  const TITLES_KEY = "thread-titles";
+  async function projectNameOf(projectId: string): Promise<string | null> {
+    try {
+      const p = (await bb.sdk.projects.get({ projectId })) as unknown as { name?: unknown };
+      return typeof p.name === "string" && p.name.trim() ? p.name.trim() : null;
+    } catch { return null; }
+  }
+  async function targetsOf(of: Roster): Promise<Map<string, TitleTarget>> {
+    const resolved = await resolveAll(of);
+    const names = new Map<string, string | null>();
+    for (const r of resolved) if (r.manageTitle && r.projectId && !names.has(r.projectId)) names.set(r.projectId, await projectNameOf(r.projectId));
+    return titleTargets(resolved, (id) => names.get(id) ?? null);
+  }
+  async function threadTitle(threadId: string): Promise<string | null> {
+    try {
+      const t = (await bb.sdk.threads.get({ threadId })) as unknown as { title?: unknown; displayTitle?: unknown; deletedAt?: unknown };
+      if (t.deletedAt != null) return null;
+      return typeof t.title === "string" ? t.title : typeof t.displayTitle === "string" ? t.displayTitle : "";
+    } catch { return null; }
+  }
+  /** After a change of the roster: rename threads by `planTitles`, with bb's ordinary thread update. */
+  async function syncTitles(before: Map<string, TitleTarget>, of: Roster): Promise<void> {
+    const after = await targetsOf(of);
+    const memory = parseTitleMemory(await bb.storage.kv.get<unknown>(TITLES_KEY));
+    const ids = new Set([...after.keys(), ...Object.keys(memory)]);
+    const titles = new Map<string, string | null>();
+    await Promise.all([...ids].map(async (id) => titles.set(id, await threadTitle(id))));
+    const plan = planTitles(before, after, memory, (id) => titles.get(id) ?? null);
+    for (const { threadId, title } of plan.set) {
+      try { await bb.sdk.threads.update({ threadId, title }); } catch { delete plan.memory[threadId]; }
+    }
+    await bb.storage.kv.set(TITLES_KEY, plan.memory);
+  }
+  /** Remember the title a thread had before the plugin set "Name — project" (for a thread renamed by hand to it). */
+  async function rememberPreviousTitle(threadId: string, previous: string): Promise<TitleMemory> {
+    const memory = parseTitleMemory(await bb.storage.kv.get<unknown>(TITLES_KEY));
+    const now = await threadTitle(threadId);
+    if (now === null) throw new Error(`No thread ${threadId}.`);
+    memory[threadId] = { previous: previous.trim().slice(0, 300), ours: memory[threadId]?.ours ?? now };
+    await bb.storage.kv.set(TITLES_KEY, memory);
+    return memory;
   }
 
   // ---------- thread facts ----------
@@ -239,7 +293,8 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
-  async function resolveAll(): Promise<ResolvedRole[]> {
+  async function resolveAll(of: Roster = roster): Promise<ResolvedRole[]> {
+    const roster = of;
     const ids = [...new Set(roster.roles.flatMap(threadIdsOf))];
     const facts = new Map<string, ThreadFact>();
     await Promise.all(ids.map(async (id) => { const f = await factFor(id); if (f) facts.set(id, f); }));
@@ -280,6 +335,8 @@ export default async function plugin(bb: BbPluginApi) {
       binding,
       primary: input.primary ?? (existing ? existing.primary : false),
       rulesEnabled: input.kind === "orchestrator" && (input.rulesEnabled ?? (existing ? existing.rulesEnabled : true)),
+      // Kept "Name — project" title: on by default for an orchestrator, off for an agent; never for an external one.
+      manageTitle: input.kind !== "external" && (input.manageTitle ?? (existing && existing.kind === input.kind ? existing.manageTitle : input.kind === "orchestrator")),
     };
   }
   function upsert(raw: RoleInput): Promise<Role> {
@@ -582,12 +639,13 @@ export default async function plugin(bb: BbPluginApi) {
     url: { type: "string", description: "Link for an external employee (http/https)" },
     primary: { type: "enum", values: ["on", "off"], description: "The one main record (gold crown); on clears it from the previous main record" },
     rules: { type: "enum", values: ["on", "off"], description: "Orchestrator only: shared orchestrator rules in its thread (default on for a new orchestrator)" },
+    title: { type: "enum", values: ["on", "off"], description: "Keep the active thread's title «Name — project» (default on for an orchestrator, off for an agent)" },
     json: { type: "boolean", description: "Machine-readable output" },
   } as const;
 
   type RoleOpts = {
     name?: string; kind?: RoleKind; about?: string; icon?: string; parent?: string; project?: string;
-    thread?: string; threads?: string[]; "bridge-topic"?: number; url?: string; primary?: "on" | "off"; rules?: "on" | "off";
+    thread?: string; threads?: string[]; "bridge-topic"?: number; url?: string; primary?: "on" | "off"; rules?: "on" | "off"; title?: "on" | "off";
   };
   function bindingFrom(o: RoleOpts, base: Binding | null, ctxThread: string | undefined): Binding {
     if (o.url !== undefined) return { mode: "external", url: o.url };
@@ -628,6 +686,7 @@ export default async function plugin(bb: BbPluginApi) {
               binding: bindingFrom(o, o.kind === "external" ? { mode: "external", url: "" } : null, ctx.threadId),
               ...(o.primary ? { primary: o.primary === "on" } : {}),
               ...(o.rules ? { rulesEnabled: o.rules === "on" } : {}),
+              ...(o.title ? { manageTitle: o.title === "on" } : {}),
             });
             return out(o.json, role, `Added ${role.name} (${KIND_LABEL[role.kind]}), id ${role.id}.`);
           } catch (error) { return fail(error); }
@@ -649,6 +708,7 @@ export default async function plugin(bb: BbPluginApi) {
               binding: bindingFrom(o, role.binding, ctx.threadId),
               ...(o.primary ? { primary: o.primary === "on" } : {}),
               ...(o.rules ? { rulesEnabled: o.rules === "on" } : {}),
+              ...(o.title ? { manageTitle: o.title === "on" } : {}),
             });
             return out(o.json, next, `Updated ${next.name}.`);
           } catch (error) { return fail(error); }
@@ -661,7 +721,22 @@ export default async function plugin(bb: BbPluginApi) {
         async run(input) {
           const role = resolveRef(input.positionals.role);
           const removed = await remove(role.id);
-          return out(input.options.json, { removed }, removed ? `Removed ${role.name}; its thread is untouched.` : "Nothing removed.");
+          return out(input.options.json, { removed }, removed ? `Removed ${role.name}; its thread is kept (a title the plugin set goes back to the previous one).` : "Nothing removed.");
+        },
+      }),
+      "title-previous": cliCommand({
+        summary: "Remember the title a role's thread had before «Name — project» (for a thread renamed by hand); it comes back when the role leaves the thread",
+        positionals: [
+          { name: "thread", description: "Thread id, or `current`", required: true },
+          { name: "title", description: "The previous title", required: true },
+        ],
+        options: { json: roleOptions.json },
+        async run(input, ctx) {
+          try {
+            const threadId = threadArg(input.positionals.thread, ctx.threadId);
+            const memory = await rememberPreviousTitle(threadId, input.positionals.title);
+            return out(input.options.json, memory[threadId], `Remembered: ${threadId} was «${memory[threadId]!.previous}».`);
+          } catch (error) { return fail(error); }
         },
       }),
       "set-thread": cliCommand({
