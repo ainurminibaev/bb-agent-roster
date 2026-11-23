@@ -568,10 +568,21 @@ export function executorTree(rootId: string, rows: readonly RowFacts[], showFini
 export function activityLine(running: boolean, lastUser: string | null, lastAssistant: string | null, max = 140): string | null {
   const pick = running ? lastUser : lastAssistant ?? lastUser;
   if (!pick) return null;
-  const text = pick.replace(/\s+/g, " ").trim();
-  if (!text) return null;
+  const text = stripServiceTags(pick.replace(/\s+/g, " ").trim());
+  if (!text) return running ? "Занят" : "Закончил";
   const short = text.length > max ? `${text.slice(0, max - 1)}…` : text;
   return `${running ? "Занят: " : "Закончил: "}${short}`;
+}
+
+/** Leading service tags like "[bb message from thread:…]", "[bb system]", "[telegram-answer:…]" — not the gist. */
+export function stripServiceTags(text: string): string {
+  let out = text.trim();
+  for (let i = 0; i < 6; i += 1) {
+    const next = out.replace(/^\[[^\]\n]{1,120}\]\s*/, "");
+    if (next === out) break;
+    out = next.trim();
+  }
+  return out;
 }
 
 // ---------- 0.2: channels of a record (read-only, from a bridge plugin) ----------

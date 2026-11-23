@@ -266,3 +266,14 @@ describe("0.2.1: one role mark — the crown; one main record", () => {
     expect(setPrimary(parsed.roles, "b").map((r) => r.primary)).toEqual([false, true]);
   });
 });
+
+import { stripServiceTags } from "../model";
+describe("status line without service tags", () => {
+  it("cuts leading bracket tags and keeps the gist; nothing left → just «Занят» / «Закончил»", () => {
+    expect(activityLine(true, "[bb message from thread:thr_abc] ключ положен в папку", null)).toBe("Занят: ключ положен в папку");
+    expect(activityLine(false, null, "[telegram-answer:0d06e36f] Переслал ответ")).toBe("Закончил: Переслал ответ");
+    expect(activityLine(true, "[limit-guard] [bb system] ", null)).toBe("Занят");
+    expect(activityLine(false, null, "[telegram-answer:1]")).toBe("Закончил");
+    expect(stripServiceTags("Текст [в скобках] внутри")).toBe("Текст [в скобках] внутри");
+  });
+});
