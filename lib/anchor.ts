@@ -32,6 +32,13 @@ export function findPlacement(root: ParentNode = document): Placement | null {
   if (firstList?.parentElement) {
     return { parent: firstList.parentElement, before: firstList, layout: "machine-tabs" };
   }
+  // Machine Tabs while its list is still loading: right after its search.
+  const search = content.querySelector<HTMLElement>(".machine-tabs-search");
+  if (search?.parentElement) {
+    let before = search.nextSibling;
+    while (before instanceof HTMLElement && before.hasAttribute(HOST_ATTR)) before = before.nextSibling;
+    return { parent: search.parentElement, before, layout: "machine-tabs" };
+  }
   return { parent: content, before: content.firstChild, layout: "standard" };
 }
 

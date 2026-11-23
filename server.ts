@@ -280,7 +280,7 @@ export default async function plugin(bb: BbPluginApi) {
   };
   const roleOptions = {
     name: { type: "string", description: `Display name (≤ ${LIMITS.name} chars)` },
-    kind: { type: "enum", values: ROLE_KINDS, description: "assistant | orchestrator | agent | external" },
+    kind: { type: "enum", values: ROLE_KINDS, description: "agent (own installation, threads replace each other) | orchestrator (a project thread promoted to a role) | external (another BB, by link)" },
     about: { type: "string", aliases: ["responsibility"], description: `What the role is responsible for (≤ ${LIMITS.responsibility} chars)` },
     icon: { type: "string", description: "Short icon, e.g. an emoji (empty = kind default)" },
     parent: { type: "string", aliases: ["reports-to"], description: "Role id or name it reports to; `none` for the owner" },
@@ -313,7 +313,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.cli.register(defineCli({
     name: "agent-roster",
-    summary: "The agent list (roles: assistant, orchestrators, agents): list, add, update, remove, move a role to another thread",
+    summary: "The agent list (roles: agents, orchestrators, external employees): list, add, update, remove, move a role to another thread",
     commands: {
       list: cliCommand({
         summary: "List agents with their active threads",

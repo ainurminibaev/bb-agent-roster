@@ -34,7 +34,7 @@ const cli = (h: Awaited<ReturnType<typeof setup>>, argv: string[], threadId?: st
 describe("server", () => {
   it("adds, lists, moves and removes roles through the CLI", async () => {
     const h = await setup({ thr_a: {}, thr_b: {}, thr_c: {} });
-    let r = await cli(h, ["add", "--name", "Помощник", "--kind", "assistant", "--thread", "thr_a"]);
+    let r = await cli(h, ["add", "--name", "Помощник", "--kind", "agent", "--thread", "thr_a"]);
     expect(r.exitCode).toBe(0);
     r = await cli(h, ["add", "--name", "Site", "--kind", "orchestrator", "--about", "сайт", "--parent", "Помощник", "--thread", "thr_b"]);
     expect(r.exitCode).toBe(0);
@@ -77,12 +77,12 @@ describe("server", () => {
 
   it("a pair reads the active thread from the bridge, falling back to the last active", async () => {
     const withBridge = await setup({ thr_1: { updatedAt: 100 }, thr_2: { updatedAt: 50 } }, { primary: "thr_1", fallback: "thr_2", active: "thr_2" });
-    await cli(withBridge, ["add", "--name", "P", "--kind", "assistant", "--threads", "thr_1,thr_2", "--bridge-topic", "7"]);
+    await cli(withBridge, ["add", "--name", "P", "--kind", "agent", "--threads", "thr_1,thr_2", "--bridge-topic", "7"]);
     let out = await withBridge.harness.behavior.callRpc("roster_list", null) as { roles: { active: unknown }[] };
     expect(out.roles[0].active).toEqual({ kind: "thread", threadId: "thr_2", reason: "bridge" });
 
     const noBridge = await setup({ thr_1: { updatedAt: 100 }, thr_2: { updatedAt: 50 } });
-    await cli(noBridge, ["add", "--name", "P", "--kind", "assistant", "--threads", "thr_1,thr_2", "--bridge-topic", "7"]);
+    await cli(noBridge, ["add", "--name", "P", "--kind", "agent", "--threads", "thr_1,thr_2", "--bridge-topic", "7"]);
     out = await noBridge.harness.behavior.callRpc("roster_list", null) as { roles: { active: unknown }[] };
     expect(out.roles[0].active).toEqual({ kind: "thread", threadId: "thr_1", reason: "last-active" });
   });

@@ -16,7 +16,7 @@ function resolved(p: Partial<ResolvedRole> & { id: string; name: string }): Reso
   };
 }
 const ROLES = [
-  resolved({ id: "lead", name: "Lead", kind: "assistant" }),
+  resolved({ id: "lead", name: "Lead", kind: "agent" }),
   resolved({ id: "site", name: "Site", parentId: "lead", parentName: "Lead" }),
 ];
 function row(id: string, parentThreadId: string | null, extra: Record<string, unknown> = {}) {
@@ -73,6 +73,15 @@ describe("sidebar placement", () => {
     expect(host.nextElementSibling?.id).toBe("recent");
     expect((host as HTMLElement).dataset.layout).toBe("machine-tabs");
     expect(document.body.innerHTML).toMatchSnapshot();
+    await scripts.lifecycle.dispose();
+  });
+
+  it("Machine Tabs still loading its list: right after its search", async () => {
+    document.body.innerHTML = `<div data-sidebar="sidebar"><div data-sidebar="content"><div id="mt"><div id="tabs">tabs</div><div class="machine-tabs-search">search</div><style></style><div id="wait">Waiting…</div></div></div></div>`;
+    const scripts = await mountPluginContentScripts(app, { pluginId: "agent-roster" });
+    await frame();
+    const host = document.querySelector(`[${HOST_ATTR}]`)!;
+    expect(host.previousElementSibling?.className).toBe("machine-tabs-search");
     await scripts.lifecycle.dispose();
   });
 
@@ -175,7 +184,7 @@ describe("block, page, dialog", () => {
     const [assign] = app.threadActions;
     const action = assign!.item({ thread: { id: "thr_new", projectId: "p1" }, data: { roles: [], rpc: {} }, sdk: {}, navigate: {}, experimental_panel: {} } as never)!;
     act(() => void action.run({ requestRename: () => undefined }));
-    await slot.findByText("Сделать оркестратором");
+    expect((await slot.findAllByText("Сделать оркестратором")).length).toBeGreaterThan(0);
     expect(document.querySelector("[data-agent-roster-dialog]")!.textContent).toContain("Кому подчиняется");
     slot.lifecycle.unmount();
   });

@@ -1,7 +1,13 @@
 # Агенты (agent-roster)
 
-BB plugin: a list of agent **roles** — assistant, project orchestrators, agents,
-external employees — on top of ordinary BB threads. Threads of a role change; its
+BB plugin: a list of agent **roles** on top of ordinary BB threads:
+
+- **agent** — a full agent on the platform: its own installation, threads that
+  replace each other (a personal assistant is an agent with its own icon);
+- **orchestrator** — a project thread promoted to a role (crown mark);
+- **external employee** — an agent in another BB, reachable by a link.
+
+ Threads of a role change; its
 name, icon and place in the hierarchy stay.
 
 ## What it adds

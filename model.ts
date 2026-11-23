@@ -5,11 +5,16 @@
 export const MODULE_NAME = "Агенты";
 export const PLUGIN_ID = "agent-roster";
 
-export const ROLE_KINDS = ["assistant", "orchestrator", "agent", "external"] as const;
+/**
+ * agent — a full agent on the platform: its own installation, threads that
+ *   replace each other (a personal assistant is an agent with its own icon);
+ * orchestrator — a project thread promoted to a role;
+ * external — an agent living in another BB, reachable by a link.
+ */
+export const ROLE_KINDS = ["agent", "orchestrator", "external"] as const;
 export type RoleKind = (typeof ROLE_KINDS)[number];
 
 export const KIND_LABEL: Record<RoleKind, string> = {
-  assistant: "помощник",
   orchestrator: "оркестратор",
   agent: "агент",
   external: "внешний сотрудник",
@@ -17,7 +22,6 @@ export const KIND_LABEL: Record<RoleKind, string> = {
 
 /** Default mark per kind; a role may set its own short icon (emoji). */
 export const KIND_ICON: Record<RoleKind, string> = {
-  assistant: "agent-roster/assistant",
   orchestrator: "agent-roster/crown",
   agent: "agent-roster/agent",
   external: "agent-roster/external",
@@ -26,7 +30,7 @@ export const KIND_ICON: Record<RoleKind, string> = {
 /**
  * How a role finds its working thread.
  * - pinned: one thread.
- * - group: several threads of one role (an assistant pair). The thread the
+ * - group: several threads of one role (an agent's pair). The thread the
  *   pair's owner (a bridge plugin) names wins; otherwise the last active one.
  * - external: an agent living in another BB, reachable only by a link.
  */
@@ -215,7 +219,7 @@ export function resolveActive(
   return best ? { kind: "thread", threadId: best.id, reason: "last-active" } : { kind: "none" };
 }
 
-const KIND_ORDER: Record<RoleKind, number> = { assistant: 0, orchestrator: 1, agent: 2, external: 3 };
+const KIND_ORDER: Record<RoleKind, number> = { agent: 0, orchestrator: 1, external: 2 };
 
 export interface TreeNode<R extends Role = Role> {
   role: R;
@@ -223,7 +227,7 @@ export interface TreeNode<R extends Role = Role> {
   children: TreeNode<R>[];
 }
 
-/** Roles as a tree by "reports to"; assistants first, then by name. */
+/** Roles as a tree by "reports to"; agents first, then orchestrators, then by name. */
 export function buildTree<R extends Role>(roles: readonly R[]): TreeNode<R>[] {
   const byParent = new Map<string | null, R[]>();
   const ids = new Set(roles.map((r) => r.id));
@@ -405,7 +409,7 @@ export function formatList(roles: readonly ResolvedRole[]): string {
 /** The short per-thread hint. No list here, only how to get it. */
 export function instructionsFor(own: readonly ResolvedRole[]): string {
   const lines = [
-    `${MODULE_NAME} module: this BB keeps a shared list of agent roles (assistant, project orchestrators, agents).`,
+    `${MODULE_NAME} module: this BB keeps a shared list of agent roles (agents, project orchestrators, external employees).`,
     "Get it with the agent_roster_list tool or `bb agent-roster list`. To write to an agent, send a normal BB message to its active thread: `bb thread tell <thread id> '<text>'`.",
     "Change the list (`bb agent-roster add|update|remove|set-thread`) only when the owner asks.",
   ];

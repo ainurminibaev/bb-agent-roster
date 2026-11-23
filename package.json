@@ -14,7 +14,6 @@
       "experimental_icons": {
         "roster": "./icons/roster.svg",
         "crown": "./icons/crown.svg",
-        "assistant": "./icons/assistant.svg",
         "agent": "./icons/agent.svg",
         "external": "./icons/external.svg",
         "edit": "./icons/edit.svg"
@@ -58,7 +57,7 @@
     "vaul": "^1.1.2",
     "vitest": "^5.1.1"
   },
-  "description": "Agents: a roster of roles (assistant, orchestrators, agents) on top of BB threads",
+  "description": "Agents: a roster of roles (agents, orchestrators, external employees) on top of BB threads",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

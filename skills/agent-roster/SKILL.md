@@ -5,12 +5,14 @@ description: Use the "Агенты" (agent-roster) list of BB agent roles — fi
 
 # Agents (agent-roster)
 
-A record in the list is a **role** (assistant, project orchestrator, agent, external
-employee), not a thread. A role has a name, kind, what it is responsible for, an
+A record in the list is a **role**, not a thread. Kinds: `agent` (a full agent on
+the platform with its own installation; its threads replace each other — a personal
+assistant is an agent with its own icon), `orchestrator` (a project thread promoted
+to a role), `external` (an agent in another BB, by link). A role has a name, kind, what it is responsible for, an
 icon, whom it reports to, a project and a way to find its **active thread**:
 
 - pinned thread;
-- several threads of one role (an assistant pair): the thread the bridge plugin
+- several threads of one role (an agent's pair of threads): the thread the bridge plugin
   names for the pair (read-only `chatPairStatus` of the plugin set in settings,
   for the pair's topic number), otherwise the most recently active one;
 - external link — an employee living in another BB.
@@ -38,7 +40,7 @@ There is no separate message channel.
 
 ```sh
 bb agent-roster add --name "Site" --kind orchestrator --about "website" --parent "Assistant" --thread current
-bb agent-roster add --name "Assistant" --kind assistant --threads thr_a,thr_b --bridge-topic 12
+bb agent-roster add --name "Assistant" --kind agent --icon "🧭" --threads thr_a,thr_b --bridge-topic 12
 bb agent-roster add --name "Ops" --kind external --url https://example.org/ops
 bb agent-roster update site --about "website and shop" --icon "🛒"
 bb agent-roster set-thread site thr_new            # after a thread handoff
