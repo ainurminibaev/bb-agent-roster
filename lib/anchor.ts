@@ -51,7 +51,7 @@ export function isPlaced(host: HTMLElement, placement: Placement): boolean {
   return host.nextSibling === placement.before;
 }
 
-/** Keeps `host` at the spot while the sidebar re-renders. */
+/** Keeps `host` at the spot while the sidebar re-renders (a timer, not rAF: rAF pauses in background tabs). */
 export function keepPlaced(host: HTMLElement, signal: AbortSignal, onChange: (placed: boolean) => void): () => void {
   let placed = false;
   let scheduled = 0;
@@ -75,13 +75,13 @@ export function keepPlaced(host: HTMLElement, signal: AbortSignal, onChange: (pl
     if (!placed && host.isConnected) { placed = true; onChange(true); }
   };
   const observer = new MutationObserver(() => {
-    if (!scheduled) scheduled = window.requestAnimationFrame(place);
+    if (!scheduled) scheduled = window.setTimeout(place, 50);
   });
   observer.observe(document.body, { childList: true, subtree: true });
   place();
   return () => {
     observer.disconnect();
-    if (scheduled) window.cancelAnimationFrame(scheduled);
+    if (scheduled) window.clearTimeout(scheduled);
     host.remove();
   };
 }

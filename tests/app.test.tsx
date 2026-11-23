@@ -36,7 +36,7 @@ function standardSidebar() {
 function machineTabsSidebar() {
   document.body.innerHTML = `<div data-sidebar="sidebar"><div data-sidebar="content"><div id="mt-root"><div class="machine-tabs-search">search</div><div data-machine-tabs-list data-machine-tabs-recent id="recent">Last 5</div><div data-machine-tabs-list id="list">rows</div></div></div></div>`;
 }
-const frame = () => new Promise((r) => setTimeout(r, 30));
+const frame = () => new Promise((r) => setTimeout(r, 120));
 
 afterEach(() => {
   resetStore();
