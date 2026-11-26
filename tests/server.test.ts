@@ -248,6 +248,14 @@ describe("0.3: orchestrator rules and the AGENTS.md section", () => {
     await cli(h, ["add", "--name", "Helper", "--kind", "agent", "--thread", "thr_a"]);
     expect(hint(h, "thr_o")).toContain(ORCHESTRATOR_RULES.split("\n")[1]);
     expect(hint(h, "thr_o")).toContain("AGENTS.md проекта, раздел «Роль: Site»");
+    // Urgent messages to a subthread go by `bb thread tell`, not the queue; the rule sits right after the executor line.
+    const rules = ORCHESTRATOR_RULES.split("\n");
+    const executorLine = rules.findIndex((line) => line.startsWith("- Исполнителю ставишь задачу"));
+    expect(rules[executorLine + 1]).toBe(
+      "- Срочное своему подтреду — ошибка, стоп, смена приоритета — отправляй `bb thread tell`: оно входит в его идущий ход. `bb thread queue create` ждёт конца его хода; очередь — для несрочного.",
+    );
+    expect(hint(h, "thr_o")).toContain("отправляй `bb thread tell`");
+    expect(hint(h, "thr_a")).not.toContain("отправляй `bb thread tell`");
     expect(hint(h, "thr_a")).not.toContain("постановщик и приёмщик");
     await cli(h, ["update", "site", "--rules", "off"]);
     expect(hint(h, "thr_o")).not.toContain("постановщик и приёмщик");
